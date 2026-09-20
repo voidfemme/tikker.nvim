@@ -1,0 +1,16 @@
+{
+  "name": "tree-sitter-tikker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tree-sitter grammar for Tikker",
+  "license": "CC0-1.0",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "wasm": "tree-sitter build --wasm -o server/tree-sitter-tikker.wasm .",
+    "rebuild": "tree-sitter generate && tree-sitter test && npm run wasm && npm --prefix server run build"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.27.0"
+  }
+}

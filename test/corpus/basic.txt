@@ -1,0 +1,176 @@
+========================================
+Imports
+========================================
+
+USE functions: [XNOR, AddressMatch]
+USE sculknet_spec/tff: [TFF: FastTFF]
+USE transmitter: *
+
+---
+
+(source_file
+  (import_statement
+    (module_path
+      (identifier))
+    (import_list
+      (import_item
+        (identifier))
+      (import_item
+        (identifier))))
+  (import_statement
+    (module_path
+      (identifier)
+      (identifier))
+    (import_list
+      (import_item
+        (identifier)
+        (identifier))))
+  (import_statement
+    (module_path
+      (identifier))
+    (import_all)))
+
+========================================
+Brace pattern with bundled component subject
+========================================
+
+{[XNOR_1, XNOR_2]}?
+    -{1, 1}-> 1 =>
+    -{*, *}-> 0 =>
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (component_array
+          (flow_destination_item
+            (identifier))
+          (flow_destination_item
+            (identifier)))))
+    (pattern_case
+      (pattern_value
+        (number))
+      (pattern_value
+        (number))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value)
+      (pattern_value)
+      (pattern_result
+        (number)))))
+
+========================================
+Event block with state write
+========================================
+
+STATE: bit = 0
+WAIT(clock):
+    {STATE}?
+        -{0}-> 1 =: STATE
+        -{1}-> 0 =: STATE
+STATE =>
+
+---
+
+(source_file
+  (state_declaration
+    (identifier)
+    (type)
+    (number))
+  (event_block
+    (identifier)
+    (block
+      (pattern_match
+        (data_array
+          (data_item
+            (identifier)))
+        (pattern_case
+          (pattern_value
+            (number))
+          (pattern_result
+            (number))
+          (state_write
+            (identifier)))
+        (pattern_case
+          (pattern_value
+            (number))
+          (pattern_result
+            (number))
+          (state_write
+            (identifier))))))
+  (flow
+    (flow_source
+      (identifier))))
+
+========================================
+Nested sequence block closes before wiring
+========================================
+
+WAIT(en):
+    SEQ(1):
+        en -> [NOT_1]
+    // comment
+[A] -> [B]
+
+---
+
+(source_file
+  (event_block
+    (identifier)
+    (block
+      (sequence_block
+        (number)
+        (block
+          (flow
+            (flow_source
+              (identifier))
+            (flow_destination
+              (component_array
+                (component_content
+                  (identifier)))))))))
+  (comment)
+  (flow
+    (flow_source
+      (component_array
+        (component_content
+          (identifier))))
+    (flow_destination
+      (component_array
+        (component_content
+          (identifier))))))
+
+========================================
+Arm block and NOP arm
+========================================
+
+{go}?
+    -{1}-> :
+        a -> 1[B]
+    -{0}-> NOP
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (number))
+      (block
+        (flow
+          (flow_source
+            (identifier))
+          (flow_destination
+            (parameter_ref
+              (number)
+              (identifier))))))
+    (pattern_case
+      (pattern_value
+        (number))
+      (pattern_result
+        (control_statement)))))

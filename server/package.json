@@ -1,0 +1,35 @@
+{
+  "name": "tikker-language-server",
+  "version": "0.1.0",
+  "description": "Language server for Tikker (.tkr): diagnostics, colors, hover, go-to-definition, completion",
+  "license": "CC0-1.0",
+  "author": "voidfemme",
+  "type": "commonjs",
+  "main": "dist/server.js",
+  "bin": {
+    "tikker-language-server": "dist/server.js",
+    "tikker-check": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "tree-sitter-tikker.wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p . && esbuild build/server.js build/cli.js --bundle --platform=node --target=node18 --outdir=dist --log-level=warning && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/",
+    "typecheck": "tsc --noEmit -p .",
+    "wasm": "cd .. && tree-sitter build --wasm -o server/tree-sitter-tikker.wasm .",
+    "prepare": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3",
+    "vscode-languageserver": "^10.1.1",
+    "vscode-languageserver-textdocument": "^1.0.14",
+    "web-tree-sitter": "^0.27.0"
+  }
+}

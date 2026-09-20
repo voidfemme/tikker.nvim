@@ -1,0 +1,143 @@
+========================================
+Vibration and enum types
+========================================
+
+2*[CalibratedSculkSensor]3 => strength:
+-> 0[filter]: strength = 0
+-> 1[heard]: {vibration}
+=> 2[resonance]: vibration
+phase: {inactive, active, cooldown} = inactive
+
+---
+
+(source_file
+  (function_declaration
+    (arity_range
+      (number))
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (pin_range
+      (number))
+    (identifier)
+    (type)
+    (number))
+  (input_parameter
+    (pin_range
+      (number))
+    (identifier)
+    (type
+      (type)))
+  (output_parameter
+    (pin_range
+      (number))
+    (identifier)
+    (type))
+  (state_declaration
+    (identifier)
+    (type
+      (enum_type
+        (identifier)
+        (identifier)
+        (identifier)))
+    (identifier)))
+
+========================================
+HEAR with WHERE, field access, and a computed time
+========================================
+
+HEAR(vib IN heard):
+    WHERE {phase, sub{vib.dist, 8}}?
+        -{inactive, 0}-> 1 =>
+        -{**}-> 0 =>
+    1 =: pending
+    AFTER(floor{vib.dist}gt):
+        vib.freq =: last_freq
+
+---
+
+(source_file
+  (hear_block
+    (identifier)
+    (identifier)
+    (block
+      (where_clause
+        (data_array
+          (data_item
+            (identifier))
+          (data_item
+            (operator_call
+              (identifier)
+              (field_access
+                (identifier)
+                (field_name))
+              (number))))
+        (pattern_case
+          (pattern_value
+            (identifier))
+          (pattern_value
+            (number))
+          (pattern_result
+            (number)))
+        (pattern_case
+          (pattern_value
+            (pattern_repeat
+              (wildcard)))
+          (pattern_result
+            (number))))
+      (flow
+        (flow_source
+          (number))
+        (state_write
+          (identifier)))
+      (after_block
+        (computed_time
+          (operator_call
+            (identifier)
+            (field_access
+              (identifier)
+              (field_name)))
+          (time_unit))
+        (block
+          (flow
+            (flow_source
+              (field_access
+                (identifier)
+                (field_name)))
+            (state_write
+              (identifier))))))))
+
+========================================
+Named items and vibration links
+========================================
+
+{freq: vib.freq} =>
+[ab{0}] ~(14)~> heard[css]
+
+---
+
+(source_file
+  (flow
+    (flow_source
+      (data_array
+        (data_item
+          (named_item
+            (identifier)
+            (field_access
+              (identifier)
+              (field_name)))))))
+  (flow
+    (flow_source
+      (component_array
+        (component_content
+          (instance_ref
+            (identifier)
+            (index
+              (number))))))
+    (vibration_link
+      (number))
+    (flow_destination
+      (parameter_ref
+        (port_name)
+        (identifier)))))

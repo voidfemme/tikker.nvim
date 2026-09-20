@@ -1,0 +1,263 @@
+========================================
+Type declarations
+========================================
+
+TYPE nibble: {bit{0..3}}
+TYPE address: {switch: nibble, port: nibble}
+TYPE pole_data: nibble{vibration}
+
+---
+
+(source_file
+  (type_declaration
+    (identifier)
+    (type
+      (type
+        (type_arguments
+          (range
+            (number)
+            (number))))))
+  (type_declaration
+    (identifier)
+    (type
+      (record_type
+        (record_field
+          (identifier)
+          (type))
+        (record_field
+          (identifier)
+          (type)))))
+  (type_declaration
+    (identifier)
+    (type
+      (type_arguments
+        (type)))))
+
+========================================
+Custom and compound types on ports
+========================================
+
+-> dest: address
+-> lanes: {nibble{vibration}}
+=> 0..3[data]: nibble{vibration}
+
+---
+
+(source_file
+  (input_parameter
+    (identifier)
+    (type
+      (identifier)))
+  (input_parameter
+    (identifier)
+    (type
+      (type
+        (type_arguments
+          (type)))))
+  (output_parameter
+    (pin_range
+      (number)
+      (number))
+    (identifier)
+    (type
+      (type_arguments
+        (type)))))
+
+========================================
+Emission ports and a declaration that emits
+========================================
+
+1[AmethystBlock]1 ~> vibration:
+-> detected: vibration
+~> 0..3[data]: nibble{vibration}
+~> 4[strobe]: vibration
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (emission_parameter
+    (pin_range
+      (number)
+      (number))
+    (identifier)
+    (type
+      (type_arguments
+        (type))))
+  (emission_parameter
+    (pin_range
+      (number))
+    (identifier)
+    (type)))
+
+========================================
+Bare ~> emits, in a flow and in an arm
+========================================
+
+{freq: vib.freq} ~>
+{go}?
+    -{1}-> vib ~>
+    -{0}-> NOP
+
+---
+
+(source_file
+  (flow
+    (flow_source
+      (data_array
+        (data_item
+          (named_item
+            (identifier)
+            (field_access
+              (identifier)
+              (field_name)))))))
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (number))
+      (pattern_result
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (number))
+      (pattern_result
+        (control_statement)))))
+
+========================================
+One-name braces are a bundle, two or more are an enum
+========================================
+
+-> inputs: {bit}
+phase: {inactive, active} = inactive
+
+---
+
+(source_file
+  (input_parameter
+    (identifier)
+    (type
+      (type)))
+  (state_declaration
+    (identifier)
+    (type
+      (enum_type
+        (identifier)
+        (identifier)))
+    (identifier)))
+
+========================================
+TYPE needs a colon
+:error
+========================================
+
+TYPE nibble {bit{0..3}}
+
+---
+
+
+
+========================================
+Type arguments must touch the name
+:error
+========================================
+
+-> x: nibble {vibration}
+
+---
+
+
+
+========================================
+Bare ~> only ends a flow
+:error
+========================================
+
+a ~> b
+
+---
+
+
+
+========================================
+Imports name types without arguments
+:error
+========================================
+
+USE types: [nibble{vibration}]
+
+---
+
+
+
+========================================
+Ports typed as fields of a record
+========================================
+
+5[TransmitterPole]5 ~> transmission{vibration}:
+-> data_in: transmission.data{vibration}
+~> strobe_out: transmission.strobe{vibration}
+-> low: address.port.low
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type
+      (identifier)
+      (type_arguments
+        (type))))
+  (input_parameter
+    (identifier)
+    (type
+      (identifier)
+      (field_name)
+      (type_arguments
+        (type))))
+  (emission_parameter
+    (identifier)
+    (type
+      (identifier)
+      (field_name)
+      (type_arguments
+        (type))))
+  (input_parameter
+    (identifier)
+    (type
+      (identifier)
+      (field_name)
+      (field_name))))
+
+========================================
+A field's dot must touch both sides
+:error
+========================================
+
+-> x: transmission . data
+
+---
+
+
+
+========================================
+A field's argument must touch it
+:error
+========================================
+
+-> x: transmission.data {vibration}
+
+---
+
+

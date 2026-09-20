@@ -1,0 +1,14 @@
+node_modules/
+server/node_modules/
+server/build/
+*.wasm.map
+# Compiled per machine by build.lua / :TikkerBuild
+parser/*
+!parser/.gitignore
+
+# tree-sitter CLI leftovers
+/*.so
+/*.dylib
+/*.dll
+/*.wasm
+log.html

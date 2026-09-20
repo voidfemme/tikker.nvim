@@ -2,14 +2,14 @@
 
 ## What is Tikker?
 
-Tikker is a kind of Hardware Design Language (HDL) I have been working out to
+Tikker is a kind of Hardware Description Language (HDL) I have been working out to
 help me with computational redstone. Tikker lets you describe redstone/sculk
-circuits with a strong emphasis on timing. It is purposefully is agnostic about
+circuits with a strong emphasis on timing. It is purposefully agnostic about
 component layout, allowing you to focus on making circuits that work, for fast
 prototyping of large complex builds, especially computational redstone.
 
 If I remain interested in the project long enough, perhaps this language can be
-complimented with at least a CLI tool for analysing complex circuits and
+complemented with at least a CLI tool for analysing complex circuits and
 pinpointing failure points across an entire project. Either way, this language
 is my first attempt at writing a language, and must exist for me to even imagine
 such an analyzer.
@@ -18,13 +18,15 @@ This language evolved from my electrical panel wiring days, where I wrote in
 brackets and arrows to help me keep track of complicated wiring diagrams in my
 head. It has evolved far beyond that, but the basic idea is source ->
 destination, and plenty of truth tables I could remember as a visual for me to
-make sense of how to route and land my connections. From day one, I:
+make sense of how to route and land my connections.
+
+## Fundamental features
 
 **Every component can be described in brackets, with a digit on the left to
 signify input wires, and a digit on the right to signify output wires**:
 `4[ComplexSwitch]8`. (I was a bit more fluid in reality about what left/right
 meant, but essentially the idea was that a number next to a square bracket
-represented a component with N number of characters.
+represented a component with N wires.
 
 Flow was another method I used to remember wiring in my head, where I would
 trace the signal through each of its components to the end. Sometimes this was

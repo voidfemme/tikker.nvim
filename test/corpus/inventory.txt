@@ -1,0 +1,257 @@
+========================================
+Inventory slots
+========================================
+
+INVENTORY slots: 5
+
+---
+
+(source_file
+  (inventory_declaration
+    (inventory_slots
+      (number))))
+
+========================================
+Inventory outputs
+========================================
+
+INVENTORY output: {push{face}}
+INVENTORY output: {spit{face}, push{bottom}}
+
+---
+
+(source_file
+  (inventory_declaration
+    (inventory_output
+      (output_method
+        (method_name)
+        (side))))
+  (inventory_declaration
+    (inventory_output
+      (output_method
+        (method_name)
+        (side))
+      (output_method
+        (method_name)
+        (side)))))
+
+========================================
+Every side
+========================================
+
+INVENTORY output: {push{top}, push{bottom}, push{left}, push{right}, spit{face}, spit{rear}}
+
+---
+
+(source_file
+  (inventory_declaration
+    (inventory_output
+      (output_method
+        (method_name)
+        (side))
+      (output_method
+        (method_name)
+        (side))
+      (output_method
+        (method_name)
+        (side))
+      (output_method
+        (method_name)
+        (side))
+      (output_method
+        (method_name)
+        (side))
+      (output_method
+        (method_name)
+        (side)))))
+
+========================================
+Inventory inside a component, next to its ports
+========================================
+
+1[Chute]1 => strength:
+-> rear: bit
+-> output: bit = 0
+INVENTORY slots: 5
+INVENTORY output: {push{bottom}}
+rear -> output
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (input_parameter
+    (identifier)
+    (type)
+    (number))
+  (inventory_declaration
+    (inventory_slots
+      (number)))
+  (inventory_declaration
+    (inventory_output
+      (output_method
+        (method_name)
+        (side))))
+  (flow
+    (flow_source
+      (identifier))
+    (flow_destination
+      (identifier))))
+
+========================================
+Stack counts in patterns
+========================================
+
+{stored}?
+    -{4s+5i}-> 3 =>
+    -{12s+30i}-> 2 =>
+    -{4s}-> 1 =>
+    -{30i}-> 1 =>
+    -{**}-> 0 =>
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (stack_notation))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (stack_notation))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (stack_notation))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (stack_notation))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (pattern_repeat
+          (wildcard)))
+      (pattern_result
+        (number)))))
+
+========================================
+Stack ranges in patterns
+========================================
+
+{stored}?
+    -{2s..4s}-> 1 =>
+    -{4s+5i..6s}-> 2 =>
+    -{0..3}-> 3 =>
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (stack_range
+          (stack_notation)
+          (stack_notation)))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (stack_range
+          (stack_notation)
+          (stack_notation)))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (pattern_range
+          (number)
+          (number)))
+      (pattern_result
+        (number)))))
+
+========================================
+Unknown inventory property is rejected
+:error
+========================================
+
+INVENTORY banana: 5
+
+---
+
+
+
+========================================
+Unknown side is rejected
+:error
+========================================
+
+INVENTORY output: {push{sideways}}
+
+---
+
+
+
+========================================
+Method must touch its brace
+:error
+========================================
+
+INVENTORY output: {push {bottom}}
+
+---
+
+
+
+========================================
+Slots takes a number, not a list
+:error
+========================================
+
+INVENTORY slots: {push{bottom}}
+
+---
+
+
+
+========================================
+Items can't come before stacks
+:error
+========================================
+
+{stored}?
+    -{5i+4s}-> 1 =>
+
+---
+
+
+
+========================================
+Stack parts must touch
+:error
+========================================
+
+{stored}?
+    -{4s + 5i}-> 1 =>
+
+---
+
+

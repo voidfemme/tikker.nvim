@@ -1,0 +1,95 @@
+========================================
+Variadic minimum with an open pin range
+========================================
+
+4*[SpecialOr]1 => bit:
+-> input1: bit
+-> input2: tuple
+-> 3..*[compare_bits]: {bit}
+
+---
+
+(source_file
+  (function_declaration
+    (arity_range
+      (number))
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (input_parameter
+    (pin_range
+      (number)
+      (open_end))
+    (identifier)
+    (type
+      (type))))
+
+========================================
+Minimum, maximum, and both
+========================================
+
+2*[OR]1 => bit:
+-> inputs: {bit}
+
+*8[Small]1 => bit:
+-> inputs: {bit}
+
+2*8[Mid]1 => bit:
+-> inputs: {bit}
+
+---
+
+(source_file
+  (function_declaration
+    (arity_range
+      (number))
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type
+      (type)))
+  (function_declaration
+    (arity_range
+      (number))
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type
+      (type)))
+  (function_declaration
+    (arity_range
+      (number)
+      (number))
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type
+      (type))))
+
+========================================
+A bare star at a call site is unchanged
+========================================
+
+x -> *[Any]
+
+---
+
+(source_file
+  (flow
+    (flow_source
+      (identifier))
+    (flow_destination
+      (parameter_ref
+        (identifier)))))

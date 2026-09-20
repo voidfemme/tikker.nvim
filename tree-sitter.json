@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "tikker",
+      "camelcase": "Tikker",
+      "scope": "source.tikker",
+      "path": ".",
+      "file-types": ["tkr", "tikker"],
+      "highlights": "queries/tikker/highlights.scm",
+      "locals": "queries/tikker/locals.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "CC0-1.0",
+    "description": "Tikker, a language for describing redstone circuits",
+    "authors": [{ "name": "voidfemme" }]
+  },
+  "bindings": { "c": false, "go": false, "node": false, "python": false, "rust": false, "swift": false }
+}

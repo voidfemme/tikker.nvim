@@ -1,0 +1,233 @@
+========================================
+Strength type and operators
+========================================
+
+3[Subtractor]1 => strength:
+-> rear: strength
+-> left: strength
+-> right: strength
+sub{rear, max{left, right}} =>
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (flow
+    (flow_source
+      (operator_call
+        (identifier)
+        (identifier)
+        (operator_call
+          (identifier)
+          (identifier)
+          (identifier))))))
+
+========================================
+Operators in a match subject and range patterns
+========================================
+
+{sub{max{left, right}, rear}}?
+    -{0}-> rear =>
+    -{1..15}-> 0 =>
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (operator_call
+          (identifier)
+          (operator_call
+            (identifier)
+            (identifier)
+            (identifier))
+          (identifier))))
+    (pattern_case
+      (pattern_value
+        (number))
+      (pattern_result
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (pattern_range
+          (number)
+          (number)))
+      (pattern_result
+        (number)))))
+
+========================================
+Delay arrows, including inside arms
+========================================
+
+rear -(2gt)-> delayed
+{mode}?
+    -{compare}-> rear -(1rt)-> out
+    -{subtract}-> 0 -(delay)-> out
+
+---
+
+(source_file
+  (flow
+    (flow_source
+      (identifier))
+    (delay
+      (time))
+    (flow_destination
+      (identifier)))
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (identifier))
+      (pattern_result
+        (identifier))
+      (delay
+        (time))
+      (flow_destination
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (identifier))
+      (pattern_result
+        (number))
+      (delay
+        (identifier))
+      (flow_destination
+        (identifier)))))
+
+========================================
+CHANGE and AFTER blocks
+========================================
+
+CHANGE(rear):
+    1 =: booked
+    AFTER(delay):
+        0 =: booked
+SEQ(1rt):
+    a -> b
+
+---
+
+(source_file
+  (change_block
+    (identifier)
+    (block
+      (flow
+        (flow_source
+          (number))
+        (state_write
+          (identifier)))
+      (after_block
+        (identifier)
+        (block
+          (flow
+            (flow_source
+              (number))
+            (state_write
+              (identifier)))))))
+  (sequence_block
+    (time)
+    (block
+      (flow
+        (flow_source
+          (identifier))
+        (flow_destination
+          (identifier))))))
+
+========================================
+Settings and chosen settings
+========================================
+
+SETTING delay: 1rt..4rt = 1rt
+SETTING mode: {compare, subtract} = compare
+SETTING amount: 0..15
+[slow]: Repeater{delay: 4rt}
+[c{0..1}]: Comparator{mode: subtract}
+
+---
+
+(source_file
+  (setting_declaration
+    (identifier)
+    (time_range
+      (time)
+      (time))
+    (time))
+  (setting_declaration
+    (identifier)
+    (setting_options
+      (identifier)
+      (identifier))
+    (identifier))
+  (setting_declaration
+    (identifier)
+    (range
+      (number)
+      (number)))
+  (instance_declaration
+    (component_array
+      (component_content
+        (identifier)))
+    (identifier)
+    (setting_values
+      (setting_value
+        (identifier)
+        (time))))
+  (instance_declaration
+    (component_array
+      (component_content
+        (instance_ref
+          (identifier)
+          (index
+            (number)
+            (number)))))
+    (identifier)
+    (setting_values
+      (setting_value
+        (identifier)
+        (identifier)))))
+
+========================================
+Optional inputs
+========================================
+
+3[Comparator]1 => strength:
+-> rear: strength
+-> left: strength = 0
+-> right: strength = 0
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (input_parameter
+    (identifier)
+    (type)
+    (number))
+  (input_parameter
+    (identifier)
+    (type)
+    (number)))

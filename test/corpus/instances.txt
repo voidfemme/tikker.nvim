@@ -1,0 +1,203 @@
+========================================
+Instance declarations
+========================================
+
+[read_state]: CopperBulb
+[even_gate, odd_gate]: Comparator
+[lamp{0..7, 0..7}]: RedstoneLamp
+
+---
+
+(source_file
+  (instance_declaration
+    (component_array
+      (component_content
+        (identifier)))
+    (identifier))
+  (instance_declaration
+    (component_array
+      (flow_destination_item
+        (identifier))
+      (flow_destination_item
+        (identifier)))
+    (identifier))
+  (instance_declaration
+    (component_array
+      (component_content
+        (instance_ref
+          (identifier)
+          (index
+            (number)
+            (number))
+          (index
+            (number)
+            (number)))))
+    (identifier)))
+
+========================================
+Indexed references, offsets, and groups
+========================================
+
+[lamp{3, 5}] -> 0[lamp{2, 5}]
+0 -> [lamp{0..7, 3}]
+
+---
+
+(source_file
+  (flow
+    (flow_source
+      (component_array
+        (component_content
+          (instance_ref
+            (identifier)
+            (index
+              (number))
+            (index
+              (number))))))
+    (flow_destination
+      (parameter_ref
+        (number)
+        (instance_ref
+          (identifier)
+          (index
+            (number))
+          (index
+            (number))))))
+  (flow
+    (flow_source
+      (number))
+    (flow_destination
+      (component_array
+        (component_content
+          (instance_ref
+            (identifier)
+            (index
+              (number)
+              (number))
+            (index
+              (number))))))))
+
+========================================
+Nested EACH closes two blocks on one line
+========================================
+
+EACH i IN 1..7:
+    EACH j IN 0..7:
+        [lamp{i, j}] -> 0[lamp{i - 1, j}]
+[A] -> [B]
+
+---
+
+(source_file
+  (each_block
+    (identifier)
+    (range
+      (number)
+      (number))
+    (block
+      (each_block
+        (identifier)
+        (range
+          (number)
+          (number))
+        (block
+          (flow
+            (flow_source
+              (component_array
+                (component_content
+                  (instance_ref
+                    (identifier)
+                    (index
+                      (identifier))
+                    (index
+                      (identifier))))))
+            (flow_destination
+              (parameter_ref
+                (number)
+                (instance_ref
+                  (identifier)
+                  (index
+                    (identifier)
+                    (index_op)
+                    (number))
+                  (index
+                    (identifier))))))))))
+  (flow
+    (flow_source
+      (component_array
+        (component_content
+          (identifier))))
+    (flow_destination
+      (component_array
+        (component_content
+          (identifier))))))
+
+========================================
+Arm result continues as a flow
+========================================
+
+{go}?
+    -{01}-> {1, 1, 0, 0} -> low
+    -{1}-> go -> 0[gate] -> result
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (tuple_literal))
+      (pattern_result
+        (data_array
+          (data_item
+            (number))
+          (data_item
+            (number))
+          (data_item
+            (number))
+          (data_item
+            (number))))
+      (flow_destination
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (number))
+      (pattern_result
+        (identifier))
+      (flow_destination
+        (parameter_ref
+          (number)
+          (identifier)))
+      (flow_destination
+        (identifier)))))
+
+========================================
+Repeat patterns
+========================================
+
+{inputs}?
+    -{0*}-> 0 =>
+    -{**}-> 1 =>
+
+---
+
+(source_file
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (pattern_repeat
+          (number)))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (pattern_repeat
+          (wildcard)))
+      (pattern_result
+        (number)))))
