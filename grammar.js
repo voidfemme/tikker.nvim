@@ -125,7 +125,7 @@ module.exports = grammar({
     stack_notation: (_) => token(choice(/\d+s(\+\d+i)?/, /\d+i/)),
 
     // Ranges
-    range: openRange(($) => $.number),
+    range: openRange(($) => choice($.number, $.identifier)),
     time_range: openRange(($) => $.time),
     pattern_range: openRange(($) =>
       choice($.number, alias($.tuple_literal, $.number)),
@@ -178,18 +178,6 @@ module.exports = grammar({
           ":",
         ),
       ),
-
-    // STATE: bit = 0
-    state_declaration: ($) =>
-      seq(
-        $.identifier,
-        choice(
-          seq(":", $.type, optional(seq("=", $._value))),
-          seq("=", $._value),
-        ),
-      ),
-
-    _value: ($) => choice($.number, $.identifier, $.data_array),
 
     // -> data_in: byte              next free pins, in declaration order
     // -> 1..8[data_in]: byte        explicitly pins 1 through 8
@@ -311,6 +299,22 @@ module.exports = grammar({
       seq(
         field("amount", $.operator_call),
         field("unit", alias(token.immediate(choice("gt", "rt")), $.time_unit)),
+      ),
+
+    // ---------------------------------------------------------------
+    // Build-time states, chosen per part when it's declared, and
+    // editable by the component itself
+    // STATE has_item: 0..1 = 0
+    // STATE items: 0..320 = 15
+    // ---------------------------------------------------------------
+
+    state_declaration: ($) =>
+      seq(
+        "STATE",
+        field("name", $.identifier),
+        ":",
+        field("allowed", choice($.time_range, $.range, $.setting_options)),
+        optional(seq("=", field("default", $._setting_value))),
       ),
 
     // ---------------------------------------------------------------

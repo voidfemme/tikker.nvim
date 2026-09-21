@@ -63,6 +63,10 @@ export interface SettingDef {
   kind: 'time' | 'number' | 'choice';
   lo?: number;
   hi?: number;
+  loName?: string;
+  hiName?: string;
+  /** a default written as another setting's name: SETTING page: ... = book */
+  defaultName?: string;
   options: string[];
   optionSet: Set<string>;
   default?: string;
@@ -162,10 +166,18 @@ export interface Workspace {
   declsIn(path: string): Decls | undefined;
 }
 
-const OPERATORS: Record<string, { min: number; max?: number; what: string; wide?: boolean }> = {
+const OPERATORS: Record<
+    string, 
+    { min: number; max?: number; what: string; wide?: boolean; wideUnlessSignal?: boolean }
+    > = {
   max: { min: 2, what: 'the strongest of its values' },
+  min: { min: 2, what: 'the least of its values' },
   sub: { min: 2, max: 2, what: 'the first value minus the second, never below 0' },
-  sum: { min: 2, what: 'the total of its values, never above 15' },
+  sum: { 
+      min: 2, 
+      what: 'the total of its values, never above 15 once a value travels on a pin', 
+      wideUnlessSignal: true 
+  },
   mod: { min: 2, max: 2, what: 'the remainder of the first value divided by the second' },
   mul: { min: 2, what: 'the product of its values', wide: true },
   div: { min: 2, max: 2, what: 'the first value divided by the second', wide: true },
@@ -537,6 +549,11 @@ function readSettings(nodes: Node[], report: Report): [Map<string, SettingDef>, 
     }
     if (dflt) {
       def.default = dflt.text;
+      // For a number or time setting, a name here is another setting of this
+      // component, not a value: SETTING current_page: book..num_pages = book.
+      if (dflt.type === 'identifier' && def.kind !== 'choice') {
+          def.defaultName = dflt.text;
+      }
     }
     if (settings.has(name)) {
       report(nameNode, `setting "${name}" is declared twice`);
@@ -548,28 +565,60 @@ function readSettings(nodes: Node[], report: Report): [Map<string, SettingDef>, 
   return [settings, order];
 }
 
-function settingValueProblem(def: SettingDef, text: string): string | undefined {
-  if (def.kind === 'time') {
-    const gt = parseTime(text);
-    if (gt === undefined) {
-      return `"${def.name}" is a time setting; give a time like 2gt or 1rt`;
+/** "0 to 15", "0 or more", "15 or less", "any" - whichever ends are bounded */
+function allowsText(lo: string | undefined, hi: string | undefined): string {
+    if (lo !== undefined && hi !== undefined) {
+        return `${lo} to ${hi}`;
     }
-    if ((def.lo !== undefined && gt < def.lo) || (def.hi !== undefined && gt > def.hi)) {
-      return `${text} is outside ${def.name}, which allows ${showTime(def.lo)} to ${showTime(def.hi)}`;
+    if (lo !== undefined) {
+        return `${lo} or more`;
     }
-  } else if (def.kind === 'number') {
-    if (!/^\d+$/.test(text)) {
-      return `"${def.name}" is a number setting; give a number from ${def.lo ?? 0} to ${def.hi ?? 0}`;
+    if (hi !== undefined) {
+        return `${hi} or less`;
     }
-    const n = Number(text);
-    if ((def.lo !== undefined && n < def.lo) || (def.hi !== undefined && n > def.hi)) {
-      return `${text} is outside ${def.name}, which allows ${def.lo} to ${def.hi}`;
-    }
-  } else if (!def.optionSet.has(text)) {
-    return `"${text}" is not an option for ${def.name}; its options are: ${def.options.join(', ')}`;
-  }
-  return undefined;
+    return 'any value';
 }
+
+function settingValueProblem(
+    def: SettingDef,
+    text: string,
+    /** the value of another setting here, for bounds written as a name*/
+    resolve?: (name: string) => number | undefined,
+): string | undefined {
+        if (def.kind === 'time') {
+            const gt = parseTime(text);
+            if (gt === undefined) {
+                return `"${def.name}" is a time setting; give a time like 2gt or 1rt`;
+            }
+            if ((def.lo !== undefined && gt < def.lo) || (def.hi !== undefined && gt > def.hi)) {
+                return `${text} is outside ${def.name}, which allows ${allowsText(
+                    def.lo === undefined ? undefined : showTime(def.lo),
+                    def.hi === undefined ? undefined : showTime(def.hi),
+                )}`;
+            }
+        } else if (def.kind === 'number') {
+            // A bound written as another setting's name is only a number once that
+            // setting has a value here: until then it is shown but not compared.
+            const lo = def.lo ?? (def.loName !== undefined ? resolve?.(def.loName) : undefined);
+            const hi = def.hi ?? (def.hiName !== undefined ? resolve?.(def.hiName) : undefined);
+            const loText = def.lo?.toString() ?? def.loName;
+            const hiText = def.hi?.toString() ?? def.hiName;
+            if (!/^\d+$/.test(text)) {
+                return `"${def.name}" is a number setting: give a number: ${allowsText(loText, hiText)}`;
+            }
+            const n = Number(text);
+            if ((lo !== undefined && n < lo) || (hi !== undefined && n > hi)) {
+                const shown = allowsText(
+                    lo !== undefined && def.loName ? `${def.loName} (${lo})` : loText,
+                    hi !== undefined && def.hiName ? `${def.hiName} (${hi})` : hiText,
+                );
+                return `${text} is outside ${def.name}, which allows ${shown}`;
+            }
+        } else if (!def.optionSet.has(text)) {
+            return `"${text}" is not an option for ${def.name}; its options are: ${def.options.join(', ')}`;
+        }
+        return undefined;
+    }
 
 interface Layout {
   known: boolean;
@@ -806,7 +855,7 @@ function attachPorts(sig: Sig, nodes: Node[], types: TypeEnv, report: Report, de
   [sig.settings, sig.settingOrder] = readSettings(nodes, report);
   for (const name of sig.settingOrder) {
     const def = sig.settings.get(name)!;
-    if (def.default !== undefined && def.node) {
+    if (def.default !== undefined && def.defaultName === undefined && def.node) {
       const problem = settingValueProblem(def, def.default);
       if (problem) {
         report(def.node, 'default: ' + problem);
@@ -1204,10 +1253,15 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       }
     };
 
-    const settingValueForPart = (def: SettingDef, vNode: Node, typeName: string): string | undefined => {
+    const settingValueForPart = (
+        def: SettingDef, 
+        vNode: Node, 
+        typeName: string,
+        resolve?: (name: string) => number | undefined,
+    ): string | undefined => {
       const text = vNode.text;
       if (vNode.type !== 'identifier') {
-        return settingValueProblem(def, text);
+        return settingValueProblem(def, text, resolve);
       }
       const isOption = def.kind === 'choice' && def.optionSet.has(text);
       const v = values.get(text);
@@ -1267,69 +1321,95 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       const chosenNode = field(node, 'settings');
       if (sig && typeName && typeNode) {
         const chosen = new Set<string>();
+        // What each setting is worth for this part: the value given here, or
+        // the component's default. Bounds written as a name are read from this.
+        const here = new Map<string, number>();
+        for (const [sname, def] of sig.settings) {
+            if (def.default !== undefined && /^\d+$/.test(def.default)) {
+                here.set(sname, Number(def.default));
+            }
+        }
         for (const sv of chosenNode ? kids(chosenNode, 'setting_value') : []) {
           const nNode = field(sv, 'name');
           const vNode = field(sv, 'value');
-          const sname = nNode?.text;
-          const def = sname ? sig.settings.get(sname) : undefined;
-          if (sname && nNode && !def) {
-            const names = sig.settingOrder;
-            add(
-              nNode,
-              `${typeName} has no setting "${sname}"; ${names.length > 0 ? 'its settings are: ' + names.join(', ') : 'it has no settings'}`,
-            );
-          } else if (def && sname && nNode) {
-            if (chosen.has(sname)) {
-              add(nNode, `setting "${sname}" is chosen twice`);
-            }
-            chosen.add(sname);
-            const problem = vNode ? settingValueForPart(def, vNode, typeName) : undefined;
-            if (problem && vNode) {
-              add(vNode, problem);
-            }
+          if (nNode && vNode && /^\d+$/.test(vNode.text)) {
+              here.set(nNode.text, Number(vNode.text));
           }
+        }
+        // A default that names another setting takes that setting's value
+        // here: a chain of them settles after a few passes.
+        for (let pass = 0; pass < sig.settings.size; pass++) {
+            let changed = false;
+            for (const [sname, def] of sig.settings) {
+                if (!here.has(sname) && def.defaultName !== undefined) {
+                    const v = here.get(def.defaultName);
+                    if (v !== undefined) {
+                        here.set(sname, v);
+                        changed = true;
+                    }
+                }
+            }
+            if (!changed) {
+                break;
+            }
+        }
+        const resolve = (name: string) => here.get(name);
+        // Settings already reported here: a bound that reads one of them would
+        // only repeat the same problem.
+        const bad = new Set<string>();
+        for (const sv of chosenNode ? kids(chosenNode, 'setting_value') : []) {
+            const nNode = field(sv, 'name');
+            const vNode = field(sv, 'value');
+            const sname = nNode?.text;
+            const def = sname ? sig.settings.get(sname) : undefined;
+            if (sname && nNode && !def) {
+                const names = sig.settingOrder;
+                add(
+                    nNode,
+                    `${typeName} has no setting "${sname}"; ${names.length > 0 ? 'its settings are: ' + names.join(', ') : 'it has no settings'}`,
+                );
+            } else if (def && sname && nNode) {
+                if (chosen.has(sname)) {
+                    add(nNode, `setting "${sname}" is chosen twice`);
+                }
+                chosen.add(sname);
+                const problem = vNode ? settingValueForPart(def, vNode, typeName, resolve) : undefined;
+                if (problem && vNode) {
+                    add(vNode, problem);
+                    bad.add(sname);
+                }
+            }
         }
         for (const sname of sig.settingOrder) {
-          const def = sig.settings.get(sname)!;
-          if (def.default === undefined && !chosen.has(sname)) {
-            add(typeNode, `${typeName} needs a value for its setting "${sname}" here, e.g. ${typeName}{${sname}: ...}`);
-          }
-        }
-      }
-
-      const list = field(node, 'instances');
-      for (const item of list ? kids(list) : []) {
-        const inner = first(item);
-        const t = inner?.type;
-        if (inner && t === 'identifier') {
-          registerInstance(inner, undefined, sig, typeName);
-        } else if (inner && t === 'instance_ref') {
-          const dims: [number, number][] = [];
-          let dimsBad = false;
-          for (const ix of kids(inner, 'index')) {
-              const openIx = openEnd(ix);
-              if (openIx) {
-                  add(openIx, 'an array of parts needs a definite size; lamp{0..7} makes eight of them');
-                  dims.push([0, 0]);
-                  dimsBad = true;
-                  continue;
-              }
-            let [a, b] = rangeNums(ix);
-            if (a !== undefined && b !== undefined) {
-              if (b < a) {
-                add(ix, `range ${a}..${b} runs backwards; write ${b}..${a}`);
-                [a, b] = [b, a];
-              }
-              dims.push([a, b]);
-            } else {
-              add(ix, 'array sizes are written as ranges, e.g. lamp{0..7} for 8 lamps');
-              dims.push([0, 0]);
-              dimsBad = true;
+            const def = sig.settings.get(sname)!;
+            if (def.default === undefined && !chosen.has(sname)) {
+                add(typeNode, `${typeName} needs a value for its setting "${sname}" here, e.g. ${typeName}{${sname}: ...}`);
+                continue;
             }
-          }
-          registerInstance(field(inner, 'name'), dims, sig, typeName, dimsBad);
-        } else {
-          add(item, 'only names and arrays can be declared here, e.g. [gate]: NOT or [lamp{0..7}]: RedstoneLamp');
+            // A default can break a bound written as another setting's name,
+            // once that other setting has a value here: Lectern{book: 1} leaves
+            // num_pages at 0, while book..* now means 1 or more.
+            const dependsOnBad = (def.loName && bad.has(def.loName)) || (def.hiName && bad.has(def.hiName));
+            const effective = here.get(sname);
+            const defaultText = def.defaultName !== undefined ? effective?.toString() : def.default;
+            if (
+                !chosen.has(sname) &&
+                defaultText !== undefined &&
+                (def.loName || def.hiName) &&
+                !dependsOnBad
+            ) {
+                const problem = settingValueProblem(def, defaultText, resolve);
+                if (problem) {
+                    const shown = def.defaultName !== undefined ? `${def.defaultName} (${defaultText})` : defaultText;
+                    add(
+                        chosenNode ?? typeNode,
+                        `${typeName} leaves "${sname}" at its default ${shown} here, and ${problem
+                            .replace(/^\S+ is outside \S+, which allows /, 'it allows ')
+                            .replace(/^"[^"]+" is a number setting; give a number: /, 'it allows ')}`,
+                    );
+                    bad.add(sname);
+                }
+            }
         }
       }
     };
@@ -2494,6 +2574,39 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       return false;
     };
 
+    /** Does this carry a value that travels on a pin? Those are strengths, so
+     * arithmetic that touches one stops at 15; settings and plain numbers are
+     * build-time arithmetic and have no ceiling. */
+    const carriesSignal = (n: Node): boolean => {
+        if (n.type === 'identifier') {
+            const v = values.get(n.text);
+            return !!v && v.kind !== 'setting';
+        }
+        if (n.type === 'operator_call') {
+            return fields(n, 'arg').some(carriesSignal);
+        }
+        return false;
+    };
+
+    /** Whether numbers above 15 make sense inside this call. */
+    const callIsWide = (call: Node): boolean => {
+        const op = OPERATORS[field(call, 'name')?.text ?? ''];
+        if (!op) {
+            return false;
+        }
+        const args = fields(call, 'arg');
+        // A signal decides it: once a pin's value is in the sum, the result is a
+        // strength, whatever else the sum adds up.
+        if (op.wideUnlessSignal && args.some(carriesSignal)) {
+            return false;
+        }
+        // vib.dist is measured in blocks, so it is already beyond 0..15.
+        if (args.some((a) => a.type === 'field_access')) {
+            return true;
+        }
+        return op.wideUnlessSignal || !op.wide;
+    };
+
     const checkOperator = (call: Node) => {
       const nameNode = field(call, 'name');
       const name = nameNode?.text;
@@ -2504,17 +2617,8 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       }
       mark(nameNode, 'operator');
       const args = fields(call, 'arg');
-      let wide = !!op.wide;
-      for (const arg of args) {
-        if (arg.type === 'field_access') {
-          wide = true;
-        } else if (arg.type === 'operator_call') {
-          const inner = field(arg, 'name');
-          if (inner && OPERATORS[inner.text]?.wide) {
-            wide = true;
-          }
-        }
-      }
+      const wide = callIsWide(call);
+      const capped = args.find(carriesSignal);
       if (args.length < op.min || (op.max !== undefined && args.length > op.max)) {
         const want = op.max === op.min ? String(op.min) : `at least ${op.min}`;
         const plural = !(op.min === 1 && op.max === 1);
@@ -2524,7 +2628,12 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         if (arg.type === 'number') {
           const n = num(arg);
           if (n !== undefined && n > 15 && !wide) {
-            add(arg, `${n} is not a strength; strengths go from 0 to 15`);
+            add(
+                arg,
+                capped && op.wideUnlessSignal
+                    ? `${n} is not a strength; "${capped.text}" travels on a pin, so this ${name} stops at 15`
+                    : `${n} is not a strength; strengths go from 0 to 15`,
+            );
           } else if ((name === 'mod' || name === 'div') && i === 1 && n === 0) {
             add(arg, name === 'mod' ? 'mod by 0 has no remainder' : 'dividing by 0 has no result');
           }

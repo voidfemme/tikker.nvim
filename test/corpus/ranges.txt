@@ -1,0 +1,266 @@
+========================================
+Open-ended settings and pin ranges
+========================================
+
+5[Hopper]5 => strength:
+SETTING items: 0..*
+SETTING cap: *..15 = 15
+SETTING hold: 1rt..* = 1rt
+-> 0..*[feeds]: bit
+=> 0..3[readout]: nibble
+0 -> readout
+
+----------------------------------------
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (setting_declaration
+    (identifier)
+    (range
+      (number)
+      (open_end)))
+  (setting_declaration
+    (identifier)
+    (range
+      (open_end)
+      (number))
+    (number))
+  (setting_declaration
+    (identifier)
+    (time_range
+      (time)
+      (open_end))
+    (time))
+  (input_parameter
+    (pin_range
+      (number)
+      (open_end))
+    (identifier)
+    (type))
+  (output_parameter
+    (pin_range
+      (number)
+      (number))
+    (identifier)
+    (type))
+  (flow
+    (flow_source
+      (number))
+    (flow_destination
+      (identifier))))
+
+========================================
+Bounds and defaults that name a setting
+========================================
+
+0[Lectern]1 => strength:
+SETTING book: 0..1
+SETTING num_pages: book..* = 0
+SETTING current_page: book..num_pages = book
+=> page_strength: strength
+0 -> page_strength
+
+----------------------------------------
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (setting_declaration
+    (identifier)
+    (range
+      (number)
+      (number)))
+  (setting_declaration
+    (identifier)
+    (range
+      (identifier)
+      (open_end))
+    (number))
+  (setting_declaration
+    (identifier)
+    (range
+      (identifier)
+      (identifier))
+    (identifier))
+  (output_parameter
+    (identifier)
+    (type))
+  (flow
+    (flow_source
+      (number))
+    (flow_destination
+      (identifier))))
+
+========================================
+Ranges as array sizes and EACH bounds
+========================================
+
+1[Wall]1 => bit:
+-> power: bit
+[lamp{0..7, 0..3}]: RedstoneLamp
+EACH i IN 0..7:
+    power -> lit[lamp{i, 0}]
+power =>
+
+----------------------------------------
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (instance_declaration
+    (component_array
+      (component_content
+        (instance_ref
+          (identifier)
+          (index
+            (range
+              (number)
+              (number)))
+          (index
+            (range
+              (number)
+              (number))))))
+    (identifier))
+  (each_block
+    (identifier)
+    (range
+      (number)
+      (number))
+    (block
+      (flow
+        (flow_source
+          (identifier))
+        (flow_destination
+          (parameter_ref
+            (port_name)
+            (instance_ref
+              (identifier)
+              (index
+                (identifier))
+              (index
+                (number))))))))
+  (flow
+    (flow_source
+      (identifier))))
+
+========================================
+Open and named bounds inside patterns
+========================================
+
+1[Gate]1 => bit:
+-> level: strength
+{level}?
+    -{0..3}-> 0 =>
+    -{4..*}-> 1 =>
+    -{**}-> 0 =>
+
+----------------------------------------
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (pattern_range
+          (number)
+          (number)))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (pattern_range
+          (number)
+          (open_end)))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (pattern_repeat
+          (wildcard)))
+      (pattern_result
+        (number)))))
+
+========================================
+Distances and stack counts as ranges
+========================================
+
+1[Ear]1 ~> vibration:
+-> heard: vibration
+INVENTORY slots: 5
+[s]: CalibratedSculkSensor
+heard ~(12..16)~> heard[s]
+{stored}?
+    -{0i..4s}-> 0 =>
+    -{4s+1i..*}-> 1 =>
+
+----------------------------------------
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (inventory_declaration
+    (inventory_slots
+      (number)))
+  (instance_declaration
+    (component_array
+      (component_content
+        (identifier)))
+    (identifier))
+  (flow
+    (flow_source
+      (identifier))
+    (vibration_link
+      (range
+        (number)
+        (number)))
+    (flow_destination
+      (parameter_ref
+        (port_name)
+        (identifier))))
+  (pattern_match
+    (data_array
+      (data_item
+        (identifier)))
+    (pattern_case
+      (pattern_value
+        (stack_range
+          (stack_notation)
+          (stack_notation)))
+      (pattern_result
+        (number)))
+    (pattern_case
+      (pattern_value
+        (stack_range
+          (stack_notation)
+          (open_end)))
+      (pattern_result
+        (number)))))

@@ -1484,6 +1484,10 @@
         "required": true,
         "types": [
           {
+            "type": "identifier",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           },
@@ -1497,6 +1501,10 @@
         "multiple": false,
         "required": true,
         "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
           {
             "type": "number",
             "named": true
@@ -1838,28 +1846,53 @@
   {
     "type": "state_declaration",
     "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "data_array",
-          "named": true
-        },
-        {
-          "type": "identifier",
-          "named": true
-        },
-        {
-          "type": "number",
-          "named": true
-        },
-        {
-          "type": "type",
-          "named": true
-        }
-      ]
+    "fields": {
+      "allowed": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "range",
+            "named": true
+          },
+          {
+            "type": "setting_options",
+            "named": true
+          },
+          {
+            "type": "time_range",
+            "named": true
+          }
+        ]
+      },
+      "default": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "time",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -2221,6 +2254,10 @@
   },
   {
     "type": "SETTING",
+    "named": false
+  },
+  {
+    "type": "STATE",
     "named": false
   },
   {

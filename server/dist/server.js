@@ -14634,8 +14634,13 @@ var require_analyze = __commonJS2({
     };
     var OPERATORS = {
       max: { min: 2, what: "the strongest of its values" },
+      min: { min: 2, what: "the least of its values" },
       sub: { min: 2, max: 2, what: "the first value minus the second, never below 0" },
-      sum: { min: 2, what: "the total of its values, never above 15" },
+      sum: {
+        min: 2,
+        what: "the total of its values, never above 15 once a value travels on a pin",
+        wideUnlessSignal: true
+      },
       mod: { min: 2, max: 2, what: "the remainder of the first value divided by the second" },
       mul: { min: 2, what: "the product of its values", wide: true },
       div: { min: 2, max: 2, what: "the first value divided by the second", wide: true },
@@ -14958,6 +14963,9 @@ var require_analyze = __commonJS2({
         }
         if (dflt) {
           def.default = dflt.text;
+          if (dflt.type === "identifier" && def.kind !== "choice") {
+            def.defaultName = dflt.text;
+          }
         }
         if (settings.has(name2)) {
           report(nameNode, `setting "${name2}" is declared twice`);
@@ -14968,22 +14976,39 @@ var require_analyze = __commonJS2({
       }
       return [settings, order];
     }
-    function settingValueProblem(def, text) {
+    function allowsText(lo, hi) {
+      if (lo !== void 0 && hi !== void 0) {
+        return `${lo} to ${hi}`;
+      }
+      if (lo !== void 0) {
+        return `${lo} or more`;
+      }
+      if (hi !== void 0) {
+        return `${hi} or less`;
+      }
+      return "any value";
+    }
+    function settingValueProblem(def, text, resolve) {
       if (def.kind === "time") {
         const gt = parseTime(text);
         if (gt === void 0) {
           return `"${def.name}" is a time setting; give a time like 2gt or 1rt`;
         }
         if (def.lo !== void 0 && gt < def.lo || def.hi !== void 0 && gt > def.hi) {
-          return `${text} is outside ${def.name}, which allows ${showTime(def.lo)} to ${showTime(def.hi)}`;
+          return `${text} is outside ${def.name}, which allows ${allowsText(def.lo === void 0 ? void 0 : showTime(def.lo), def.hi === void 0 ? void 0 : showTime(def.hi))}`;
         }
       } else if (def.kind === "number") {
+        const lo = def.lo ?? (def.loName !== void 0 ? resolve?.(def.loName) : void 0);
+        const hi = def.hi ?? (def.hiName !== void 0 ? resolve?.(def.hiName) : void 0);
+        const loText = def.lo?.toString() ?? def.loName;
+        const hiText = def.hi?.toString() ?? def.hiName;
         if (!/^\d+$/.test(text)) {
-          return `"${def.name}" is a number setting; give a number from ${def.lo ?? 0} to ${def.hi ?? 0}`;
+          return `"${def.name}" is a number setting: give a number: ${allowsText(loText, hiText)}`;
         }
         const n = Number(text);
-        if (def.lo !== void 0 && n < def.lo || def.hi !== void 0 && n > def.hi) {
-          return `${text} is outside ${def.name}, which allows ${def.lo} to ${def.hi}`;
+        if (lo !== void 0 && n < lo || hi !== void 0 && n > hi) {
+          const shown = allowsText(lo !== void 0 && def.loName ? `${def.loName} (${lo})` : loText, hi !== void 0 && def.hiName ? `${def.hiName} (${hi})` : hiText);
+          return `${text} is outside ${def.name}, which allows ${shown}`;
         }
       } else if (!def.optionSet.has(text)) {
         return `"${text}" is not an option for ${def.name}; its options are: ${def.options.join(", ")}`;
@@ -15162,7 +15187,7 @@ var require_analyze = __commonJS2({
       [sig.settings, sig.settingOrder] = readSettings(nodes, report);
       for (const name2 of sig.settingOrder) {
         const def = sig.settings.get(name2);
-        if (def.default !== void 0 && def.node) {
+        if (def.default !== void 0 && def.defaultName === void 0 && def.node) {
           const problem = settingValueProblem(def, def.default);
           if (problem) {
             report(def.node, "default: " + problem);
@@ -15498,10 +15523,10 @@ var require_analyze = __commonJS2({
             mark(nameNode);
           }
         };
-        const settingValueForPart = (def, vNode, typeName) => {
+        const settingValueForPart = (def, vNode, typeName, resolve) => {
           const text2 = vNode.text;
           if (vNode.type !== "identifier") {
-            return settingValueProblem(def, text2);
+            return settingValueProblem(def, text2, resolve);
           }
           const isOption = def.kind === "choice" && def.optionSet.has(text2);
           const v = values.get(text2);
@@ -15547,6 +15572,36 @@ var require_analyze = __commonJS2({
           const chosenNode = (0, tree_1.field)(node, "settings");
           if (sig && typeName && typeNode) {
             const chosen = /* @__PURE__ */ new Set();
+            const here = /* @__PURE__ */ new Map();
+            for (const [sname, def] of sig.settings) {
+              if (def.default !== void 0 && /^\d+$/.test(def.default)) {
+                here.set(sname, Number(def.default));
+              }
+            }
+            for (const sv of chosenNode ? (0, tree_1.kids)(chosenNode, "setting_value") : []) {
+              const nNode = (0, tree_1.field)(sv, "name");
+              const vNode = (0, tree_1.field)(sv, "value");
+              if (nNode && vNode && /^\d+$/.test(vNode.text)) {
+                here.set(nNode.text, Number(vNode.text));
+              }
+            }
+            for (let pass = 0; pass < sig.settings.size; pass++) {
+              let changed = false;
+              for (const [sname, def] of sig.settings) {
+                if (!here.has(sname) && def.defaultName !== void 0) {
+                  const v = here.get(def.defaultName);
+                  if (v !== void 0) {
+                    here.set(sname, v);
+                    changed = true;
+                  }
+                }
+              }
+              if (!changed) {
+                break;
+              }
+            }
+            const resolve = (name2) => here.get(name2);
+            const bad = /* @__PURE__ */ new Set();
             for (const sv of chosenNode ? (0, tree_1.kids)(chosenNode, "setting_value") : []) {
               const nNode = (0, tree_1.field)(sv, "name");
               const vNode = (0, tree_1.field)(sv, "value");
@@ -15560,9 +15615,10 @@ var require_analyze = __commonJS2({
                   add(nNode, `setting "${sname}" is chosen twice`);
                 }
                 chosen.add(sname);
-                const problem = vNode ? settingValueForPart(def, vNode, typeName) : void 0;
+                const problem = vNode ? settingValueForPart(def, vNode, typeName, resolve) : void 0;
                 if (problem && vNode) {
                   add(vNode, problem);
+                  bad.add(sname);
                 }
               }
             }
@@ -15570,42 +15626,19 @@ var require_analyze = __commonJS2({
               const def = sig.settings.get(sname);
               if (def.default === void 0 && !chosen.has(sname)) {
                 add(typeNode, `${typeName} needs a value for its setting "${sname}" here, e.g. ${typeName}{${sname}: ...}`);
+                continue;
               }
-            }
-          }
-          const list = (0, tree_1.field)(node, "instances");
-          for (const item of list ? (0, tree_1.kids)(list) : []) {
-            const inner = (0, tree_1.first)(item);
-            const t = inner?.type;
-            if (inner && t === "identifier") {
-              registerInstance(inner, void 0, sig, typeName);
-            } else if (inner && t === "instance_ref") {
-              const dims = [];
-              let dimsBad = false;
-              for (const ix of (0, tree_1.kids)(inner, "index")) {
-                const openIx = openEnd(ix);
-                if (openIx) {
-                  add(openIx, "an array of parts needs a definite size; lamp{0..7} makes eight of them");
-                  dims.push([0, 0]);
-                  dimsBad = true;
-                  continue;
-                }
-                let [a, b] = rangeNums(ix);
-                if (a !== void 0 && b !== void 0) {
-                  if (b < a) {
-                    add(ix, `range ${a}..${b} runs backwards; write ${b}..${a}`);
-                    [a, b] = [b, a];
-                  }
-                  dims.push([a, b]);
-                } else {
-                  add(ix, "array sizes are written as ranges, e.g. lamp{0..7} for 8 lamps");
-                  dims.push([0, 0]);
-                  dimsBad = true;
+              const dependsOnBad = def.loName && bad.has(def.loName) || def.hiName && bad.has(def.hiName);
+              const effective = here.get(sname);
+              const defaultText = def.defaultName !== void 0 ? effective?.toString() : def.default;
+              if (!chosen.has(sname) && defaultText !== void 0 && (def.loName || def.hiName) && !dependsOnBad) {
+                const problem = settingValueProblem(def, defaultText, resolve);
+                if (problem) {
+                  const shown = def.defaultName !== void 0 ? `${def.defaultName} (${defaultText})` : defaultText;
+                  add(chosenNode ?? typeNode, `${typeName} leaves "${sname}" at its default ${shown} here, and ${problem.replace(/^\S+ is outside \S+, which allows /, "it allows ").replace(/^"[^"]+" is a number setting; give a number: /, "it allows ")}`);
+                  bad.add(sname);
                 }
               }
-              registerInstance((0, tree_1.field)(inner, "name"), dims, sig, typeName, dimsBad);
-            } else {
-              add(item, "only names and arrays can be declared here, e.g. [gate]: NOT or [lamp{0..7}]: RedstoneLamp");
             }
           }
         };
@@ -16667,6 +16700,30 @@ var require_analyze = __commonJS2({
           }
           return false;
         };
+        const carriesSignal = (n) => {
+          if (n.type === "identifier") {
+            const v = values.get(n.text);
+            return !!v && v.kind !== "setting";
+          }
+          if (n.type === "operator_call") {
+            return (0, tree_1.fields)(n, "arg").some(carriesSignal);
+          }
+          return false;
+        };
+        const callIsWide = (call) => {
+          const op = OPERATORS[(0, tree_1.field)(call, "name")?.text ?? ""];
+          if (!op) {
+            return false;
+          }
+          const args2 = (0, tree_1.fields)(call, "arg");
+          if (op.wideUnlessSignal && args2.some(carriesSignal)) {
+            return false;
+          }
+          if (args2.some((a) => a.type === "field_access")) {
+            return true;
+          }
+          return op.wideUnlessSignal || !op.wide;
+        };
         const checkOperator = (call) => {
           const nameNode = (0, tree_1.field)(call, "name");
           const name2 = nameNode?.text;
@@ -16677,17 +16734,8 @@ var require_analyze = __commonJS2({
           }
           mark(nameNode, "operator");
           const args2 = (0, tree_1.fields)(call, "arg");
-          let wide = !!op.wide;
-          for (const arg of args2) {
-            if (arg.type === "field_access") {
-              wide = true;
-            } else if (arg.type === "operator_call") {
-              const inner = (0, tree_1.field)(arg, "name");
-              if (inner && OPERATORS[inner.text]?.wide) {
-                wide = true;
-              }
-            }
-          }
+          const wide = callIsWide(call);
+          const capped = args2.find(carriesSignal);
           if (args2.length < op.min || op.max !== void 0 && args2.length > op.max) {
             const want = op.max === op.min ? String(op.min) : `at least ${op.min}`;
             const plural = !(op.min === 1 && op.max === 1);
@@ -16697,7 +16745,7 @@ var require_analyze = __commonJS2({
             if (arg.type === "number") {
               const n = num(arg);
               if (n !== void 0 && n > 15 && !wide) {
-                add(arg, `${n} is not a strength; strengths go from 0 to 15`);
+                add(arg, capped && op.wideUnlessSignal ? `${n} is not a strength; "${capped.text}" travels on a pin, so this ${name2} stops at 15` : `${n} is not a strength; strengths go from 0 to 15`);
               } else if ((name2 === "mod" || name2 === "div") && i2 === 1 && n === 0) {
                 add(arg, name2 === "mod" ? "mod by 0 has no remainder" : "dividing by 0 has no result");
               }
