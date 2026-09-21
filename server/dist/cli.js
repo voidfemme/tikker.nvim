@@ -4892,6 +4892,18 @@ var require_analyze = __commonJS2({
       }
       return Number(node.text);
     }
+    function openEnd(node) {
+      if (!node) {
+        return void 0;
+      }
+      const r = node.type === "index" ? (0, tree_1.first)(node, "range") ?? node : node;
+      const s2 = (0, tree_1.field)(r, "start");
+      const e = (0, tree_1.field)(r, "end");
+      if (s2?.type === "open_end") {
+        return s2;
+      }
+      return e?.type === "open_end" ? e : void 0;
+    }
     function placePorts(ports, nPins, compName, types, report) {
       const used = /* @__PURE__ */ new Set();
       let cursor = 0;
@@ -5356,10 +5368,10 @@ var require_analyze = __commonJS2({
         const instances = scope.instances;
         const ORDINALS = ["first", "second", "third", "fourth"];
         const nth = (d) => ORDINALS[d - 1] ?? `#${d}`;
-        const rangeNums = (node) => [
-          num((0, tree_1.field)(node, "start")),
-          num((0, tree_1.field)(node, "end"))
-        ];
+        const rangeNums = (node) => {
+          const r = node.type === "index" ? (0, tree_1.first)(node, "range") ?? node : node;
+          return [num((0, tree_1.field)(r, "start")), num((0, tree_1.field)(r, "end"))];
+        };
         const registerInstance = (nameNode, dims, sig, typeName, dimsBad = false) => {
           if (!nameNode) {
             return;
@@ -5467,6 +5479,13 @@ var require_analyze = __commonJS2({
               const dims = [];
               let dimsBad = false;
               for (const ix of (0, tree_1.kids)(inner, "index")) {
+                const openIx = openEnd(ix);
+                if (openIx) {
+                  add(openIx, "an array of parts needs a definite size; lamp{0..7} makes eight of them");
+                  dims.push([0, 0]);
+                  dimsBad = true;
+                  continue;
+                }
                 let [a, b] = rangeNums(ix);
                 if (a !== void 0 && b !== void 0) {
                   if (b < a) {
@@ -5487,7 +5506,7 @@ var require_analyze = __commonJS2({
           }
         };
         const bindingsAt = (node) => {
-          const b = /* @__PURE__ */ new Map();
+          const bindings = /* @__PURE__ */ new Map();
           let p = node.parent;
           while (p) {
             if (p.type === "each_block") {
@@ -5495,14 +5514,14 @@ var require_analyze = __commonJS2({
               const r = (0, tree_1.field)(p, "range");
               if (v && r) {
                 const [a, z] = rangeNums(r);
-                if (!b.has(v.text) && a !== void 0 && z !== void 0) {
-                  b.set(v.text, [Math.min(a, z), Math.max(a, z)]);
+                if (!bindings.has(v.text) && a !== void 0 && z !== void 0) {
+                  bindings.set(v.text, [Math.min(a, z), Math.max(a, z)]);
                 }
               }
             }
             p = p.parent;
           }
-          return b;
+          return bindings;
         };
         const hearBlockFor = (node, name2) => {
           let p = node.parent;
@@ -6818,6 +6837,10 @@ var require_analyze = __commonJS2({
               const v = (0, tree_1.field)(x, "var");
               const r = (0, tree_1.field)(x, "range");
               if (r) {
+                const openR = openEnd(r);
+                if (openR) {
+                  add(openR, 'an EACH range needs both ends; with "*" the body would repeat forever');
+                }
                 const [a, b] = rangeNums(r);
                 if (a !== void 0 && b !== void 0 && b < a) {
                   add(r, `range ${a}..${b} runs backwards; write ${b}..${a}`);
@@ -6923,6 +6946,21 @@ var require_analyze = __commonJS2({
           }
         }
       }
+      (0, tree_1.walk)(root, (n) => {
+        if (n.type === "type_arguments") {
+          for (const r of (0, tree_1.kids)(n, "range")) {
+            const open = openEnd(r);
+            if (open) {
+              add(open, "a type needs a definite number of pins, so this range needs both ends");
+            }
+          }
+        } else if (n.type === "vibration_link") {
+          const open = openEnd((0, tree_1.field)(n, "distance"));
+          if (open) {
+            add(open, "a vibration needs a distance with both ends, since how long it takes to arrive depends on it");
+          }
+        }
+      });
       if (errorRows.size > 0) {
         const maybeDeclared = /* @__PURE__ */ new Set();
         for (const row of errorRows) {

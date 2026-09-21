@@ -3,6 +3,7 @@
 
 import { fileURLToPath, pathToFileURL } from 'url';
 import {
+  CompletionTriggerKind,
   createConnection,
   Diagnostic,
   DiagnosticSeverity,
@@ -208,7 +209,8 @@ connection.onCompletion((p) => {
     model = modelFor(doc);
   }
   try {
-    return completionsAt(model, ws, pathOf(doc.uri), text, line, p.position.character);
+    const onlySpecific = p.context?.triggerKind === CompletionTriggerKind.TriggerCharacter;
+    return completionsAt(model, ws, pathOf(doc.uri), text, line, p.position.character, onlySpecific);
   } finally {
     temp?.tree.delete();
   }

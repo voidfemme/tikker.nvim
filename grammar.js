@@ -6,6 +6,31 @@
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
 
+// 1. A range is `start..end`, inclusive, always with fields named `start` and `end`.
+// 2. Either end may be `*`, parsed as `open_end`, meaning "no bound on this side".
+//    What that allows is the checker's business, not the grammar's.
+// 3. `*` meaning "no bound" and `*` meaning "any value" (the pattern wildcard) are
+//    different ideas that share a character. They already parse to different nodes,
+//    `open_end` and `wildcard`, and that should stay true everywhere.
+
+/**
+ * A range: start..end, inclusive. Either end may be `*`, meaning "no bound on
+ * this side"; whether that is allowed here is the checker's business.
+ * @param {(syms: GrammarSymbols<string>) => RuleOrLiteral} bound what one end looks like
+ * @returns {RuleBuilder<string>}
+ */
+const openRange = (bound) => ($) =>
+  choice(
+    seq(
+      field("start", bound($)),
+      "..",
+      field("end", choice(bound($), alias("*", $.open_end))),
+    ),
+    // `*..*` is left out: it constrains nothing, and with nothing to name the
+    // kind of bound, a number range and a time range would look identical.
+    seq(field("start", alias("*", $.open_end)), "..", field("end", bound($))),
+  );
+
 module.exports = grammar({
   name: "tikker",
 
@@ -90,6 +115,47 @@ module.exports = grammar({
         $.control_statement,
       ),
 
+    time: (_) => token(seq(/\d+/, choice("gt", "rt"))),
+
+    // Stack notation:
+    // 4s+5i = 4 stacks, 5 items
+    // 4s = 4 stacks (should pass on its own)
+    // 5i = 5 items (should pass on its own)
+    // 5i+4s is not legal
+    stack_notation: (_) => token(choice(/\d+s(\+\d+i)?/, /\d+i/)),
+
+    // Ranges
+    range: openRange(($) => $.number),
+    time_range: openRange(($) => $.time),
+    pattern_range: openRange(($) =>
+      choice($.number, alias($.tuple_literal, $.number)),
+    ),
+    stack_range: openRange(($) => $.stack_notation),
+
+    // 3  or  1..4 (inclusive)  or  3..* (pin 3 to the end, for a variadic port)
+    pin_range: ($) =>
+      seq(
+        field("start", $.number),
+        optional(
+          seq("..", field("end", choice($.number, alias("*", $.open_end)))),
+        ),
+      ),
+
+    // Inlined, so a declaration and a flow can share `4[` until the star
+    // (or its absence) tells them apart.
+    _arity: ($) => choice($._count, $.arity_range),
+
+    // The number must touch the star: 2* and *8, never 2 * or * 8.
+    arity_range: ($) =>
+      choice(
+        seq(
+          field("min", $.number),
+          token.immediate("*"),
+          optional(field("max", alias(token.immediate(/\d+/), $.number))),
+        ),
+        seq("*", field("max", alias(token.immediate(/\d+/), $.number))),
+      ),
+
     // The numbers count wires (pins), not parameters: a byte parameter uses
     // 8 pins. Pins are numbered from 0.
     //   9[ShiftRegister]8 => byte:
@@ -146,30 +212,6 @@ module.exports = grammar({
       choice(
         $.identifier,
         seq(field("pins", $.pin_range), "[", $.identifier, "]"),
-      ),
-
-    // 3  or  1..4 (inclusive)  or  3..* (pin 3 to the end, for a variadic port)
-    pin_range: ($) =>
-      seq(
-        field("start", $.number),
-        optional(
-          seq("..", field("end", choice($.number, alias("*", $.open_end)))),
-        ),
-      ),
-
-    // Inlined, so a declaration and a flow can share `4[` until the star
-    // (or its absence) tells them apart.
-    _arity: ($) => choice($._count, $.arity_range),
-
-    // The number must touch the star: 2* and *8, never 2 * or * 8.
-    arity_range: ($) =>
-      choice(
-        seq(
-          field("min", $.number),
-          token.immediate("*"),
-          optional(field("max", alias(token.immediate(/\d+/), $.number))),
-        ),
-        seq("*", field("max", alias(token.immediate(/\d+/), $.number))),
       ),
 
     // => result: byte              output port on the next free output pins
@@ -271,8 +313,6 @@ module.exports = grammar({
         field("unit", alias(token.immediate(choice("gt", "rt")), $.time_unit)),
       ),
 
-    time: (_) => token(seq(/\d+/, choice("gt", "rt"))),
-
     // ---------------------------------------------------------------
     // Build-time settings, chosen per part when it's declared
     //   SETTING delay: 1rt..4rt = 1rt
@@ -290,8 +330,6 @@ module.exports = grammar({
         field("allowed", choice($.time_range, $.range, $.setting_options)),
         optional(seq("=", field("default", $._setting_value))),
       ),
-
-    time_range: ($) => seq(field("start", $.time), "..", field("end", $.time)),
 
     setting_options: ($) =>
       seq("{", $.identifier, repeat(seq(",", $.identifier)), "}"),
@@ -358,9 +396,6 @@ module.exports = grammar({
         field("range", $.range),
         $.block,
       ),
-
-    // 0..7 (inclusive)
-    range: ($) => seq(field("start", $.number), "..", field("end", $.number)),
 
     // ---------------------------------------------------------------
     // Instances
@@ -537,7 +572,9 @@ module.exports = grammar({
     index: ($) =>
       choice(
         field("value", $.number),
-        seq(field("start", $.number), "..", field("end", $.number)),
+        // A group of parts: lamp{0..7}. The range rule is shared, so `*` parses
+        // here too; the checker rejects it, since an array needs a size.
+        $.range,
         seq(
           field("var", $.identifier),
           optional(
@@ -650,36 +687,12 @@ module.exports = grammar({
       choice(
         $.identifier,
         $.number,
-        "*",
+        alias("*", $.wildcard),
         $.tuple_literal,
         $.pattern_repeat,
         $.pattern_range,
         $.stack_notation,
         $.stack_range,
-      ),
-
-    // A strength between two levels, inclusive: -{0..3}->
-    pattern_range: ($) =>
-      seq(
-        field("start", $._pattern_bound),
-        "..",
-        field("end", $._pattern_bound),
-      ),
-
-    _pattern_bound: ($) => choice($.number, alias($.tuple_literal, $.number)),
-
-    // Stack notation:
-    // 4s+5i = 4 stacks, 5 items
-    // 4s = 4 stacks (should pass on its own)
-    // 5i = 5 items (should pass on its own)
-    // 5i+4s is not legal
-    stack_notation: (_) => token(choice(/\d+s(\+\d+i)?/, /\d+i/)),
-
-    stack_range: ($) =>
-      seq(
-        field("start", $.stack_notation),
-        "..",
-        field("end", $.stack_notation),
       ),
 
     // "This value, for all the rest": {0*} is all zeros, {**} is anything.

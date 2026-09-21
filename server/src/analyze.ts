@@ -584,6 +584,21 @@ function num(node: Node | undefined): number | undefined {
   return Number(node.text);
 }
 
+/** The `*` end of a range, if it has one. Ranges are shared, so each place
+ * that uses one decides whether an open end makes sense there. */
+function openEnd(node: Node | undefined): Node | undefined {
+    if (!node) {
+        return undefined;
+    }
+    const r = node.type === 'index' ? first(node, 'range') ?? node : node;
+    const s = field(r, 'start');
+    const e = field(r, 'end');
+    if (s?.type === 'open_end') {
+        return s;
+    }
+    return e?.type === 'open_end' ? e : undefined;
+}
+
 /** Gives each port its pins (s..e). Explicit ranges as written; the rest take the next free pins. */
 function placePorts(
   ports: Port[],
@@ -1152,10 +1167,10 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
     const ORDINALS = ['first', 'second', 'third', 'fourth'];
     const nth = (d: number) => ORDINALS[d - 1] ?? `#${d}`;
 
-    const rangeNums = (node: Node): [number | undefined, number | undefined] => [
-      num(field(node, 'start')),
-      num(field(node, 'end')),
-    ];
+    const rangeNums = (node: Node): [number | undefined, number | undefined] => {
+        const r = node.type === 'index' ? first(node, 'range') ?? node : node;
+        return [num(field(r, 'start')), num(field(r, 'end'))];
+    };
 
     const registerInstance = (
       nameNode: Node | undefined,
@@ -1292,6 +1307,13 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           const dims: [number, number][] = [];
           let dimsBad = false;
           for (const ix of kids(inner, 'index')) {
+              const openIx = openEnd(ix);
+              if (openIx) {
+                  add(openIx, 'an array of parts needs a definite size; lamp{0..7} makes eight of them');
+                  dims.push([0, 0]);
+                  dimsBad = true;
+                  continue;
+              }
             let [a, b] = rangeNums(ix);
             if (a !== undefined && b !== undefined) {
               if (b < a) {
@@ -1312,8 +1334,13 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       }
     };
 
+    /** The EACH variables around a node, each with the values it takes.
+     *  This only answers a question and is called once per node that needs an
+     *  answer, so nothing here reports a problem: an EACH is checked once, in
+     *  the `each_block` branch of the statement walk. An open or backwards
+     *  range is simply skipped, since it binds no usable values. */
     const bindingsAt = (node: Node): Map<string, [number, number]> => {
-      const b = new Map<string, [number, number]>();
+      const bindings = new Map<string, [number, number]>();
       let p = node.parent;
       while (p) {
         if (p.type === 'each_block') {
@@ -1321,14 +1348,14 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           const r = field(p, 'range');
           if (v && r) {
             const [a, z] = rangeNums(r);
-            if (!b.has(v.text) && a !== undefined && z !== undefined) {
-              b.set(v.text, [Math.min(a, z), Math.max(a, z)]);
+            if (!bindings.has(v.text) && a !== undefined && z !== undefined) {
+              bindings.set(v.text, [Math.min(a, z), Math.max(a, z)]);
             }
           }
         }
         p = p.parent;
       }
-      return b;
+      return bindings;
     };
 
     const hearBlockFor = (node: Node, name: string): Node | undefined => {
@@ -2750,6 +2777,10 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           const v = field(x, 'var');
           const r = field(x, 'range');
           if (r) {
+              const openR = openEnd(r);
+              if (openR) {
+                  add(openR, 'an EACH range needs both ends; with "*" the body would repeat forever');
+              }
             const [a, b] = rangeNums(r);
             if (a !== undefined && b !== undefined && b < a) {
               add(r, `range ${a}..${b} runs backwards; write ${b}..${a}`);
@@ -2858,6 +2889,22 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       }
     }
   }
+
+  walk(root, (n) => {
+      if (n.type === 'type_arguments') {
+          for (const r of kids(n, 'range')) {
+              const open = openEnd(r);
+              if (open) {
+                  add(open, 'a type needs a definite number of pins, so this range needs both ends');
+              }
+          }
+      } else if (n.type === 'vibration_link') {
+          const open = openEnd(field(n, 'distance'));
+          if (open) {
+              add(open, 'a vibration needs a distance with both ends, since how long it takes to arrive depends on it');
+          }
+      }
+  });
 
   // Syntax errors take precedence: name checks on broken lines are dropped,
   // and a name that appears on a broken line may be declared there.

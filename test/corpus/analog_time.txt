@@ -195,8 +195,9 @@ SETTING amount: 0..15
         (instance_ref
           (identifier)
           (index
-            (number)
-            (number)))))
+            (range
+              (number)
+              (number))))))
     (identifier)
     (setting_values
       (setting_value

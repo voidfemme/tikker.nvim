@@ -457,6 +457,10 @@ export function completionsAt(
   text: string,
   line: number,
   character: number,
+  /** true when a trigger character (like `:` or a space) opened completion:
+   *  then only suggestions specific to that spot are offered, never the
+   *  everything-list, which would pop up on every space. */
+  onlySpecific = false,
 ): CompletionItem[] {
   const lines = text.split('\n');
   const full = lines[line] ?? '';
@@ -641,7 +645,12 @@ export function completionsAt(
     return out;
   }
 
-  // Anything else: values, parts, components, operators, keywords
+  // Anything else: values, parts, components, operators, keywords. Not after
+  // a trigger character, and not at the end of a line that opens a block
+  // (WAIT(a):  {x}?), where the next thing typed is a new line.
+  if (onlySpecific || /[:?]\s*$/.test(before)) {
+    return [];
+  }
   const out: CompletionItem[] = [];
   for (const [name, v] of scope?.values ?? []) {
     out.push(item(name, v.kind === 'setting' ? CompletionItemKind.Constant : CompletionItemKind.Variable, `${v.kind}: ${v.setting?.allowedText ?? v.type ?? ''}`));

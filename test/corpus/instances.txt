@@ -27,11 +27,13 @@ Instance declarations
         (instance_ref
           (identifier)
           (index
-            (number)
-            (number))
+            (range
+              (number)
+              (number)))
           (index
-            (number)
-            (number)))))
+            (range
+              (number)
+              (number))))))
     (identifier)))
 
 ========================================
@@ -72,8 +74,9 @@ Indexed references, offsets, and groups
           (instance_ref
             (identifier)
             (index
-              (number)
-              (number))
+              (range
+                (number)
+                (number)))
             (index
               (number))))))))
 

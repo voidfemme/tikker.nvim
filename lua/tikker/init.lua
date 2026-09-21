@@ -3,13 +3,13 @@ local M = {}
 
 ---@class tikker.Options
 ---@field lsp? boolean Start the language server for Tikker files. Default true.
----@field completion? boolean|'auto' Built-in completion as you type. 'auto' (the default) turns it on unless blink.cmp or nvim-cmp is installed, since those already show LSP completions.
+---@field completion? boolean Turn on Neovim's built-in LSP completion as you type (0.11+). Off by default: completion plugins like blink.cmp and nvim-cmp already show the server's suggestions.
 ---@field severity? table<string, 'error'|'warning'> Overrides for unknownComponent, undeclaredSignal, wiredOr and unusedPin.
 
 ---@type tikker.Options
 M.defaults = {
   lsp = true,
-  completion = 'auto',
+  completion = false,
   severity = {},
 }
 
@@ -43,14 +43,7 @@ function M.apply()
 end
 
 function M.use_builtin_completion()
-  local c = M.options.completion
-  if c == 'auto' then
-    local has = function(mod)
-      return package.loaded[mod] ~= nil or #vim.api.nvim_get_runtime_file('lua/' .. mod:gsub('%.', '/') .. '/init.lua', false) > 0
-    end
-    return not (has('blink.cmp') or has('cmp'))
-  end
-  return c == true
+  return M.options.completion == true
 end
 
 local warned = false

@@ -45,7 +45,7 @@ function M.check()
   else
     h.ok('tikker_ls is enabled')
   end
-  h.info('built-in completion: ' .. (require('tikker').use_builtin_completion() and 'on' or 'off (another completion plugin handles it)'))
+  h.info('built-in completion: ' .. (require('tikker').use_builtin_completion() and 'on' or 'off (your completion plugin shows the suggestions)'))
 end
 
 return M

@@ -57,8 +57,10 @@ Brace pattern with bundled component subject
       (pattern_result
         (number)))
     (pattern_case
-      (pattern_value)
-      (pattern_value)
+      (pattern_value
+        (wildcard))
+      (pattern_value
+        (wildcard))
       (pattern_result
         (number)))))
 
