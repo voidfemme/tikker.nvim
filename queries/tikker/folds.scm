@@ -9,4 +9,3 @@
 
 ; Fold timing annotations with parentheses
 (timing_annotation) @fold
-(where_clause) @fold

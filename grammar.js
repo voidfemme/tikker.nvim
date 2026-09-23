@@ -95,6 +95,9 @@ module.exports = grammar({
         $.setting_declaration,
         $.inventory_declaration,
         $.control_statement,
+        // A component header ends in ":" like any other block opener, so a
+        // ";" at the top level closes the component.
+        $.block_end,
       ),
 
     _block_statement: ($) =>
@@ -109,7 +112,6 @@ module.exports = grammar({
         $.change_block,
         $.hear_block,
         $.after_block,
-        $.where_clause,
         $.instance_declaration,
         $.setting_declaration,
         $.control_statement,
@@ -156,9 +158,14 @@ module.exports = grammar({
         seq("*", field("max", alias(token.immediate(/\d+/), $.number))),
       ),
 
-    // The numbers count wires (pins), not parameters: a byte parameter uses
-    // 8 pins. Pins are numbered from 0.
+    // The numbers count connection points, not parameters: a byte parameter
+    // uses 8 of them. They are numbered from 0. Every port line counts,
+    // whatever medium it uses: a sculk sensor's ear is as much a part of what
+    // the component offers the world as its redstone side.
     //   9[ShiftRegister]8 => byte:
+    // The return type belongs in the header only when no output port is
+    // declared below; with ports, the ports give the types:
+    //   2[CalibratedSculkSensor]3:
     // A variadic component gives a count range instead:
     //   *[OR]1     any number of input pins
     //   2*[OR]1    at least 2
@@ -173,44 +180,94 @@ module.exports = grammar({
           $.identifier,
           "]",
           $._arity,
-          choice("=>", "~>"),
-          $.type,
+          optional(
+            seq(field("arrow", choice("=>", "~>")), field("ret", $.type)),
+          ),
           ":",
         ),
       ),
 
-    // -> data_in: byte              next free pins, in declaration order
-    // -> 1..8[data_in]: byte        explicitly pins 1 through 8
-    // -> 0[shift_enable]: bit       explicitly pin 0
+    // -> data_in: byte               next free pins, in declaration order
+    // -> 1..8[data_in: byte]         explicitly pins 1 through 8
+    // -> 0[shift_enable: bit]        explicitly pin 0
     // Ranges may overlap: two parameters can be different views of the same pins.
     // -> left: strength = 0          optional: if nothing is wired it reads 0
     // Inputs are required unless marked this way.
+    // -> 1[heard: strength{vibration}] ~: 16    how far this port hears
     input_parameter: ($) =>
       seq(
         "->",
-        $._param_name,
-        ":",
-        $.type,
+        $._port_spec,
         optional(seq("=", field("unwired", $.number))),
+        optional($.hearing_range),
       ),
 
-    // Hidden so the identifier stays a direct child of the parameter node,
-    // which keeps existing queries like (input_parameter (identifier)) valid.
+    // A port is a physical point on the component, so brackets go around it,
+    // the same brackets a component wears in 5[Hopper]5. The type sits inside
+    // them with the name, and the pin number is optional: without one, the
+    // port takes the next free pins in declaration order.
+    //
+    // Which side the number sits on says which way the port faces, the same
+    // way it does in the header:
+    //   -> 0[power: bit]              in, on pin 0
+    //   => [readout: strength]0       out, on pin 0
+    // Both sides parse, so the checker can say when the number and the arrow
+    // disagree. The older spellings, with the type outside the brackets or
+    // with no brackets at all, still parse.
+    // Hidden, so the identifier stays a direct child of the parameter node
+    // and queries like (input_parameter (identifier)) keep working.
+    _port_spec: ($) =>
+      choice(
+        seq($.identifier, ":", $.type),
+        seq(
+          optional(field("lead", $.pin_range)),
+          "[",
+          $.identifier,
+          ":",
+          $.type,
+          "]",
+          optional(field("trail", alias($._trailing_pins, $.pin_range))),
+        ),
+        seq(field("lead", $.pin_range), "[", $.identifier, "]", ":", $.type),
+      ),
+
+    // The number on the output side must touch its bracket, like [X]low and
+    // lamp{3}: otherwise a flow starting with a number on the next line would
+    // be read as this port's pins.
+    _trailing_pins: ($) =>
+      seq(
+        field("start", alias(token.immediate(/\d+/), $.number)),
+        optional(
+          seq("..", field("end", choice($.number, alias("*", $.open_end)))),
+        ),
+      ),
+
+    // Hidden, for the timing annotations, which name a port without typing it
+    // in place.
     _param_name: ($) =>
       choice(
         $.identifier,
         seq(field("pins", $.pin_range), "[", $.identifier, "]"),
       ),
 
-    // => result: byte              output port on the next free output pins
-    // => 0..3[low]: nibble          output port on explicit pins
+    //   ~: 16    this port hears 16 blocks out
+    // A bound on what the receiver can hear. It belongs to the receiver, not
+    // to the medium and not to what the medium carries.
+    hearing_range: ($) =>
+      seq("~:", field("distance", choice($.number, $.identifier, $.range))),
+
+    // => result: byte                output port on the next free output pins
+    // => 0..3[low: nibble]           output port on explicit pins
     // Mirrors input parameters: same ranges, same overlap rules. A component
     // with no declared outputs has one implicit output, driven by bare `=>`.
-    output_parameter: ($) => seq("=>", $._param_name, ":", $.type),
+    output_parameter: ($) => seq("=>", $._port_spec, optional($.hearing_range)),
 
-    // ~> out_signal: vibration     an emission: sent into the air, where every
-    //                               listener in range hears it; not wired
-    emission_parameter: ($) => seq("~>", $._param_name, ":", $.type),
+    // ~> out_signal: strength{vibration}
+    //     an emission: sent into the air, where every listener in range hears
+    //     it; not wired. The medium is on the type; the arrow repeats it so
+    //     the line says on its own how this value leaves.
+    emission_parameter: ($) =>
+      seq("~>", $._port_spec, optional($.hearing_range)),
 
     timing_parameter: ($) => seq("->", $.timing_annotation),
 
@@ -229,10 +286,14 @@ module.exports = grammar({
         ),
       ),
 
+    // ACCEPT ends an arm of the filter at the top of a HEAR body: this
+    // arrival is a candidate. Anything no arm matches is dropped, so the
+    // filter needs no catch-all.
     control_statement: ($) =>
       choice(
         seq("TOGGLE", $.identifier),
         "NOP",
+        "ACCEPT",
         seq("WAIT", "(", $.identifier, ")"),
       ),
 
@@ -276,17 +337,6 @@ module.exports = grammar({
     //   AFTER(2gt):       runs its body that long after the event around it
     after_block: ($) =>
       seq("AFTER", "(", field("delay", $._duration), ")", $.block),
-
-    //   WHERE {phase, pending}?      first statement of a HEAR body: keeps (1)
-    //        -{inactive, 0}-> 1 =>   or drops (0) each vibration before one
-    //        -{**}-> 0 =>            is chosen
-    where_clause: ($) =>
-      seq(
-        "WHERE",
-        field("subject", $.data_array),
-        "?",
-        repeat1($.pattern_case),
-      ),
 
     // 2gt (game ticks) or 1rt (redstone ticks, 2 game ticks each). A setting
     // name stands for a time chosen when the part is built. A bare number is
@@ -417,8 +467,26 @@ module.exports = grammar({
         optional(field("settings", $.setting_values)),
       ),
 
-    // A colon followed by an indented body.
-    block: ($) => seq(":", $._indent, repeat1($._block_statement), $._dedent),
+    // A colon followed by an indented body, and optionally a ";" saying where
+    // it ends. Indentation still decides where a block stops; the ";" states
+    // it out loud on the line that closes it, so the shape of a deeply nested
+    // component is readable without counting columns.
+    // prec.right: a ";" closes the innermost block that is still open, which
+    // is what the indentation it sits at already says.
+    block: ($) =>
+      prec.right(
+        seq(
+          ":",
+          $._indent,
+          repeat1($._block_statement),
+          $._dedent,
+          optional($.block_end),
+        ),
+      ),
+
+    // ";" — the end of a block or of a pattern. It sits at the indentation of
+    // the thing it closes.
+    block_end: (_) => ";",
 
     // ---------------------------------------------------------------
     // Flows (wiring)
@@ -662,8 +730,17 @@ module.exports = grammar({
     //           ...indented body...
     // The subject is always a value, so it is always braced.
     // ---------------------------------------------------------------
+    // "?" opens a block of arms the same way ":" opens a block of statements,
+    // so a pattern closes with ";" too.
     pattern_match: ($) =>
-      seq(field("subject", $.data_array), "?", repeat1($.pattern_case)),
+      prec.right(
+        seq(
+          field("subject", $.data_array),
+          "?",
+          repeat1($.pattern_case),
+          optional($.block_end),
+        ),
+      ),
 
     pattern_case: ($) =>
       prec.right(
@@ -750,8 +827,6 @@ module.exports = grammar({
         "tuple",
         "int",
         "unknown",
-        // An event, not a level: it exists only in the tick it arrives
-        "vibration",
         // A type declared with TYPE, here or in an imported file
         $.identifier,
       ),
@@ -767,11 +842,19 @@ module.exports = grammar({
         ),
       ),
 
-    //   nibble{vibration}   a nibble whose lanes carry vibrations
+    //   nibble{vibration}   a nibble that travels through the air
+    //   strength{contact}   a strength that passes between touching blocks
     //   bit{0..3}           four bits, numbered 0..3
     // The brace must touch the name, like max{...} and lamp{3}.
+    // A type name here parses, so the checker can say what the slot takes.
     type_arguments: ($) =>
-      seq(token.immediate("{"), choice($.type, $.range), "}"),
+      seq(token.immediate("{"), choice($.medium, $.type, $.range), "}"),
+
+    // How a value travels. There is no name for a wire: a bare `nibble` is
+    // redstone on pins, and this slot says when it is anything else.
+    // The set is fixed. A medium the game adds later is a change to the
+    // language, the way sculk was in 1.19.
+    medium: (_) => choice("vibration", "contact"),
 
     // {inactive, active, cooldown}: state that holds one of these names.
     // At least two names: {x} alone is a bundle of type x.

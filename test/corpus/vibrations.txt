@@ -1,22 +1,20 @@
 ========================================
-Vibration and enum types
+Media on ports, a hearing range, and enum state
 ========================================
 
-2*[CalibratedSculkSensor]3 => strength:
--> 0[filter]: strength = 0
--> 1[heard]: {vibration}
-=> 2[resonance]: vibration
-phase: {inactive, active, cooldown} = inactive
+2[CalibratedSculkSensor]3:
+-> 0[filter: strength] = 0
+-> 1[heard: strength{vibration}] ~: 16
+=> 2[resonance: strength{contact}]
+STATE phase: {inactive, active, cooldown} = inactive
 
 ---
 
 (source_file
   (function_declaration
-    (arity_range
-      (number))
-    (identifier)
     (number)
-    (type))
+    (identifier)
+    (number))
   (input_parameter
     (pin_range
       (number))
@@ -28,32 +26,35 @@ phase: {inactive, active, cooldown} = inactive
       (number))
     (identifier)
     (type
-      (type)))
+      (type_arguments
+        (medium)))
+    (hearing_range
+      (number)))
   (output_parameter
     (pin_range
       (number))
     (identifier)
-    (type))
+    (type
+      (type_arguments
+        (medium))))
   (state_declaration
     (identifier)
-    (type
-      (enum_type
-        (identifier)
-        (identifier)
-        (identifier)))
+    (setting_options
+      (identifier)
+      (identifier)
+      (identifier))
     (identifier)))
 
 ========================================
-HEAR with WHERE, field access, and a computed time
+HEAR with an ACCEPT filter, field access, and a computed time
 ========================================
 
 HEAR(vib IN heard):
-    WHERE {phase, sub{vib.dist, 8}}?
-        -{inactive, 0}-> 1 =>
-        -{**}-> 0 =>
+    {phase, sub{vib.dist, 8}}?
+        -{inactive, 0}-> ACCEPT
     1 =: pending
     AFTER(floor{vib.dist}gt):
-        vib.freq =: last_freq
+        vib =: last_freq
 
 ---
 
@@ -62,7 +63,7 @@ HEAR(vib IN heard):
     (identifier)
     (identifier)
     (block
-      (where_clause
+      (pattern_match
         (data_array
           (data_item
             (identifier))
@@ -79,13 +80,7 @@ HEAR(vib IN heard):
           (pattern_value
             (number))
           (pattern_result
-            (number)))
-        (pattern_case
-          (pattern_value
-            (pattern_repeat
-              (wildcard)))
-          (pattern_result
-            (number))))
+            (control_statement))))
       (flow
         (flow_source
           (number))
@@ -102,9 +97,7 @@ HEAR(vib IN heard):
         (block
           (flow
             (flow_source
-              (field_access
-                (identifier)
-                (field_name)))
+              (identifier))
             (state_write
               (identifier))))))))
 
@@ -112,7 +105,7 @@ HEAR(vib IN heard):
 Named items and vibration links
 ========================================
 
-{freq: vib.freq} =>
+{strobe: ready, data: low} =>
 [ab{0}] ~(14)~> heard[css]
 
 ---
@@ -124,9 +117,11 @@ Named items and vibration links
         (data_item
           (named_item
             (identifier)
-            (field_access
-              (identifier)
-              (field_name)))))))
+            (identifier)))
+        (data_item
+          (named_item
+            (identifier)
+            (identifier))))))
   (flow
     (flow_source
       (component_array
@@ -141,3 +136,39 @@ Named items and vibration links
       (parameter_ref
         (port_name)
         (identifier)))))
+
+========================================
+A filter arm says ACCEPT, and NOP ignores the rest
+========================================
+
+HEAR(vib IN heard):
+    {phase, gap}?
+        -{inactive, 0}-> ACCEPT
+        -{**}-> NOP
+
+---
+
+(source_file
+  (hear_block
+    (identifier)
+    (identifier)
+    (block
+      (pattern_match
+        (data_array
+          (data_item
+            (identifier))
+          (data_item
+            (identifier)))
+        (pattern_case
+          (pattern_value
+            (identifier))
+          (pattern_value
+            (number))
+          (pattern_result
+            (control_statement)))
+        (pattern_case
+          (pattern_value
+            (pattern_repeat
+              (wildcard)))
+          (pattern_result
+            (control_statement)))))))

@@ -4275,7 +4275,8 @@ var require_types = __commonJS2({
   "build/types.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.TypeEnv = exports2.BUILTIN_TYPES = exports2.LEVELS = exports2.BASE_WIDTH = void 0;
+    exports2.TypeEnv = exports2.MEDIUM_NAMES = exports2.MEDIA = exports2.BUILTIN_TYPES = exports2.LEVELS = exports2.BASE_WIDTH = void 0;
+    exports2.isMedium = isMedium;
     exports2.norm = norm;
     exports2.splitTop = splitTop;
     exports2.trailingGroup = trailingGroup;
@@ -4284,11 +4285,26 @@ var require_types = __commonJS2({
       strength: 1,
       tuple: 2,
       nibble: 4,
-      byte: 8,
-      vibration: 1
+      byte: 8
     };
     exports2.LEVELS = { bit: 1, strength: 15, tuple: 3, nibble: 15, byte: 255 };
-    exports2.BUILTIN_TYPES = ["bit", "strength", "byte", "nibble", "tuple", "int", "unknown", "vibration"];
+    exports2.BUILTIN_TYPES = ["bit", "strength", "byte", "nibble", "tuple", "int", "unknown"];
+    exports2.MEDIA = {
+      vibration: {
+        what: "a sculk vibration, sent into the air, where every listener in range hears it",
+        kind: "event",
+        delivery: { dist: "how far it traveled, in blocks" }
+      },
+      contact: {
+        what: "passed between blocks that touch, like a hopper and the container it faces",
+        kind: "either",
+        delivery: {}
+      }
+    };
+    exports2.MEDIUM_NAMES = Object.keys(exports2.MEDIA);
+    function isMedium(name2) {
+      return typeof name2 === "string" && Object.prototype.hasOwnProperty.call(exports2.MEDIA, name2);
+    }
     var NAME = "[A-Za-z_&][A-Za-z0-9_&]*";
     var RANGE_ARG = /^\{\s*(\d+)\s*\.\.\s*(\d+)\s*\}$/;
     function norm(text) {
@@ -4421,7 +4437,83 @@ var require_types = __commonJS2({
         }
         return { ok: true, type: current, arg: rest, head };
       }
-      /** Pin width of a type written as text, or undefined when it has none fixed. */
+      /**
+       * The medium a type travels on, or undefined for a wire. The medium is the
+       * last argument, so it reads the same on a plain name and on a projection:
+       * strength{vibration}, transmission.data{vibration}.
+       */
+      mediumOf(text) {
+        if (typeof text !== "string") {
+          return void 0;
+        }
+        const t = norm(text);
+        const group = trailingGroup(t);
+        if (group === "" || group.length === t.length) {
+          return void 0;
+        }
+        const inner = group.slice(1, -1).trim();
+        return isMedium(inner) ? inner : void 0;
+      }
+      /** What a type carries, with the medium taken off: strength{vibration} -> strength. */
+      payloadOf(text) {
+        if (typeof text !== "string") {
+          return void 0;
+        }
+        const t = norm(text);
+        const medium = this.mediumOf(t);
+        return medium === void 0 ? t : t.slice(0, t.length - trailingGroup(t).length).trim();
+      }
+      /** Whether a value persists (a level), exists only on arrival (an event), or can be either. */
+      kindOf(text) {
+        const medium = this.mediumOf(text);
+        return medium !== void 0 ? exports2.MEDIA[medium].kind : "level";
+      }
+      /** Whether a medium measures how far a value came, which is what ~: bounds. */
+      measuresDistance(text) {
+        return "dist" in this.deliveryOf(text);
+      }
+      /** The facts a medium's link fills in, readable as vib.dist. */
+      deliveryOf(text) {
+        const medium = this.mediumOf(text);
+        return medium !== void 0 ? exports2.MEDIA[medium].delivery : {};
+      }
+      /**
+       * The largest value a type can hold, following TYPE definitions and
+       * projections and ignoring how it travels: air changes when a value shows
+       * up, not how big it can be.
+       */
+      level(text, depth = 0) {
+        if (typeof text !== "string" || depth > 16) {
+          return void 0;
+        }
+        const payload = this.payloadOf(text);
+        if (payload === void 0 || payload === "") {
+          return void 0;
+        }
+        if (exports2.LEVELS[payload] !== void 0) {
+          return exports2.LEVELS[payload];
+        }
+        const rng = /^(\d+)\s*\.\.\s*(\d+)$/.exec(payload);
+        if (rng) {
+          return Math.max(Number(rng[1]), Number(rng[2]));
+        }
+        const proj = this.resolveProjection(payload);
+        if (proj && proj.ok) {
+          return this.level(proj.type + proj.arg, depth + 1);
+        }
+        const na = nameWithArg(payload);
+        if (na && RANGE_ARG.test(na[1])) {
+          return void 0;
+        }
+        const def = this.defs.get(payload);
+        return def !== void 0 ? this.level(def, depth + 1) : void 0;
+      }
+      /**
+       * Pin width of a type written as text, or undefined when it has none fixed.
+       * A medium argument adds no pins and takes none away: `strength{vibration}`
+       * is one connection point, the same as `strength`, because a component's
+       * header counts every way in and out, not only its wires.
+       */
       width(text, depth = 0) {
         if (typeof text !== "string") {
           return void 0;
@@ -4443,8 +4535,7 @@ var require_types = __commonJS2({
           if (rm) {
             return w !== void 0 ? w * (Math.abs(Number(rm[2]) - Number(rm[1])) + 1) : void 0;
           }
-          const lane = this.width(proj.arg.slice(1, -1), depth + 1);
-          return w !== void 0 && lane !== void 0 ? w * lane : void 0;
+          return isMedium(proj.arg.slice(1, -1).trim()) ? w : void 0;
         } else if (new RegExp(`^${NAME}\\.`).test(text)) {
           return void 0;
         }
@@ -4478,8 +4569,7 @@ var require_types = __commonJS2({
           if (rm) {
             return base !== void 0 ? base * (Math.abs(Number(rm[2]) - Number(rm[1])) + 1) : void 0;
           }
-          const lane = this.width(arg.slice(1, -1), depth + 1);
-          return base !== void 0 && lane !== void 0 ? base * lane : void 0;
+          return isMedium(arg.slice(1, -1).trim()) ? base : void 0;
         }
         const def = this.defs.get(text);
         if (def !== void 0) {
@@ -4508,10 +4598,13 @@ var require_analyze = __commonJS2({
   "build/analyze.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.BASE_WIDTH = exports2.FIELDS = exports2.OPERATOR_INFO = exports2.DEFAULT_CONFIG = exports2.WARN = exports2.ERROR = void 0;
+    exports2.BASE_WIDTH = exports2.OPERATOR_INFO = exports2.DEFAULT_CONFIG = exports2.WARN = exports2.ERROR = void 0;
+    exports2.readableFields = readableFields;
     exports2.parseTime = parseTime;
     exports2.showTime = showTime;
     exports2.pinSpan = pinSpan;
+    exports2.showDelay = showDelay;
+    exports2.showDelays = showDelays;
     exports2.readDecls = readDecls;
     exports2.analyze = analyze;
     var parser_12 = require_parser();
@@ -4526,7 +4619,9 @@ var require_analyze = __commonJS2({
       unknownComponentSeverity: exports2.ERROR,
       undeclaredSignalSeverity: exports2.ERROR,
       wiredOrSeverity: exports2.WARN,
-      unusedPinSeverity: exports2.WARN
+      unusedPinSeverity: exports2.WARN,
+      unreadWireSeverity: exports2.WARN,
+      unclosedBlockSeverity: exports2.WARN
     };
     var OPERATORS = {
       max: { min: 2, what: "the strongest of its values" },
@@ -4543,14 +4638,20 @@ var require_analyze = __commonJS2({
       floor: { min: 1, max: 1, what: "its value rounded down to a whole number", wide: true }
     };
     exports2.OPERATOR_INFO = OPERATORS;
-    exports2.FIELDS = {
-      vibration: {
-        freq: "its frequency, 1..15",
-        dist: "how far it traveled, in blocks"
+    function readableFields(types, type) {
+      const out2 = {};
+      const payload = types.payloadOf(type);
+      const def = payload !== void 0 ? types.defs.get(payload) ?? payload : void 0;
+      for (const f of types.recordFields(def) ?? []) {
+        out2[f.name] = `its ${f.name}, a ${f.type}`;
       }
-    };
-    function fieldList(ty) {
-      return Object.keys(exports2.FIELDS[ty] ?? {}).sort().join(", ");
+      for (const [k, v] of Object.entries(types.deliveryOf(type))) {
+        out2[k] = v;
+      }
+      return out2;
+    }
+    function fieldList(flds) {
+      return Object.keys(flds).sort().join(", ");
     }
     function parseTime(text) {
       const m = /^(\d+)([A-Za-z]{2})$/.exec(text);
@@ -4603,6 +4704,18 @@ var require_analyze = __commonJS2({
       [/->\s*\{\s*$/, 'arm bodies use ":" and an indented block instead of { ... }'],
       [/^\s*\}/, 'arm bodies use ":" and an indented block instead of { ... }'],
       [/^\s*USE\s/, "USE must come before every other statement (comments above it are fine)"],
+      [
+        /^\s*WHERE\s*\{/,
+        "WHERE is gone: the filter is a plain pattern whose arms say ACCEPT, e.g. {phase, gap}? with -{inactive, 0}-> ACCEPT"
+      ],
+      [
+        /^\s*(?:->|=>|~>)\s*\d+\*/,
+        '"N*" counts pins in a component header; a port that runs to the end writes it as a range, e.g. 0..*[power: {bit}]'
+      ],
+      [
+        /=:\s*[A-Za-z_&][A-Za-z0-9_&]*\s*(?:-\(|->|=>|~>)/,
+        '"=:" ends a flow, so nothing can follow it; put the other destination on its own line'
+      ],
       [/->\s*[A-Za-z_&][A-Za-z0-9_&]*[ \t]+\[/, "a port name must touch its bracket: param1[X], not param1 [X]"],
       [/\][ \t]+[A-Za-z_&][A-Za-z0-9_&]*\s*$/, "a named output must touch its bracket: [X]low, not [X] low"],
       [/\][ \t]+[A-Za-z_&][A-Za-z0-9_&]*\s*->/, "a named output must touch its bracket: [X]low, not [X] low"],
@@ -4619,17 +4732,24 @@ var require_analyze = __commonJS2({
     function isBlankOrComment(line) {
       return /^\s*$/.test(line) || /^\s*\/\//.test(line);
     }
+    function codeOf(line) {
+      const i2 = line.indexOf("//");
+      return i2 === -1 ? line : line.slice(0, i2);
+    }
+    var HINT_REACH = 2;
     function hintFor(lines, sr, er) {
+      const last = Math.min(er, sr + HINT_REACH);
       const order = [sr];
-      for (let row = sr + 1; row <= er; row++) {
+      for (let row = sr + 1; row <= last; row++) {
         order.push(row);
       }
-      order.push(sr - 1, er + 1);
+      order.push(sr - 1, Math.min(er, last) + 1);
       for (const row of order) {
         const line = row >= 0 ? lines[row] : void 0;
         if (line !== void 0) {
+          const code = codeOf(line);
           for (const [re, hint] of HINTS) {
-            if (re.test(line)) {
+            if (re.test(code)) {
               return row === sr ? hint : `${hint} (line ${row + 1})`;
             }
           }
@@ -4674,8 +4794,24 @@ var require_analyze = __commonJS2({
           syntax: true
         });
       };
+      const hasInnerError = (node) => {
+        for (const child of node.children) {
+          if (child && (child.type === "ERROR" || child.isMissing || child.hasError && hasInnerError(child))) {
+            return true;
+          }
+        }
+        return false;
+      };
       const visit = (node) => {
         if (node.type === "ERROR") {
+          if (hasInnerError(node)) {
+            for (const child of node.children) {
+              if (child) {
+                visit(child);
+              }
+            }
+            return;
+          }
           const text = snippet(node);
           record(node, text !== "" ? `syntax error near "${text}"` : "syntax error");
           return;
@@ -4714,7 +4850,7 @@ var require_analyze = __commonJS2({
     }
     function parseSignature(node) {
       const text = node.text;
-      const m = /^([\d*]+)\s*\[\s*(.*?)\s*\]\s*([\d*]+)\s*([=~])>\s*(.*?)\s*:$/s.exec(text);
+      const m = /^([\d*]+)\s*\[\s*(.*?)\s*\]\s*([\d*]+)\s*(?:([=~])>\s*(.*?)\s*)?:$/s.exec(text);
       if (!m) {
         return void 0;
       }
@@ -4737,7 +4873,8 @@ var require_analyze = __commonJS2({
         outputs,
         outMin,
         outMax,
-        ret: m[5],
+        ret: m[5] ?? "",
+        retArrow: m[4] === void 0 ? void 0 : m[4] === "~" ? "~>" : "=>",
         declText: text,
         inPorts: [],
         outPorts: [],
@@ -4758,6 +4895,9 @@ var require_analyze = __commonJS2({
         if (child.type === "function_declaration") {
           current = { decl: child, nodes: [] };
           comps.push(current);
+        } else if (child.type === "block_end") {
+          current.closed = true;
+          current = prelude;
         } else if (child.type !== "import_statement" && child.type !== "comment") {
           current.nodes.push(child);
         }
@@ -4782,30 +4922,61 @@ var require_analyze = __commonJS2({
         }
         const ty = (0, tree_1.first)(holder, "type");
         const tytext = ty ? ty.text : void 0;
-        let pending;
-        for (const child of (0, tree_1.kids)(holder)) {
-          if (child.type === "pin_range") {
-            pending = child;
-          } else if (child.type === "identifier") {
-            const end = pending ? (0, tree_1.field)(pending, "end") : void 0;
-            const unwired = (0, tree_1.field)(holder, "unwired");
-            list.push({
-              name: child.text,
-              idNode: child,
-              pinsNode: pending,
-              type: tytext,
-              variadic: types.isVariadic(tytext),
-              emits: n.type === "emission_parameter",
-              open: !!end && end.type === "open_end",
-              optional: !!unwired,
-              unwiredNode: unwired,
-              defRange: (0, tree_1.rangeOf)(child)
-            });
-            pending = void 0;
+        const hear = (0, tree_1.first)(holder, "hearing_range");
+        const unwired = (0, tree_1.field)(holder, "unwired");
+        const lead = (0, tree_1.field)(holder, "lead");
+        const trail = (0, tree_1.field)(holder, "trail");
+        const make = (child, pins, trailing) => {
+          const end = pins ? (0, tree_1.field)(pins, "end") : void 0;
+          return {
+            name: child.text,
+            idNode: child,
+            pinsNode: pins,
+            pinsTrailing: trailing,
+            type: tytext,
+            medium: types.mediumOf(tytext),
+            payload: types.payloadOf(tytext),
+            kind: types.kindOf(tytext),
+            hearNode: hear,
+            hearText: hear ? (0, tree_1.field)(hear, "distance")?.text ?? void 0 : void 0,
+            typeInside: ty ? typeIsBracketed(holder, ty) : false,
+            variadic: types.isVariadic(tytext),
+            emits: n.type === "emission_parameter",
+            open: !!end && end.type === "open_end",
+            optional: !!unwired,
+            unwiredNode: unwired,
+            defRange: (0, tree_1.rangeOf)(child)
+          };
+        };
+        if (n.type === "timing_parameter") {
+          let pending;
+          for (const child of (0, tree_1.kids)(holder)) {
+            if (child.type === "pin_range") {
+              pending = child;
+            } else if (child.type === "identifier") {
+              list.push(make(child, pending, false));
+              pending = void 0;
+            }
+          }
+        } else {
+          const id = (0, tree_1.first)(holder, "identifier");
+          if (id) {
+            list.push(make(id, lead ?? trail, !lead && !!trail));
+            if (lead && trail) {
+              list[list.length - 1].extraPinsNode = trail;
+            }
           }
         }
       }
       return [inputs, outputs];
+    }
+    function typeIsBracketed(holder, ty) {
+      for (const child of holder.children) {
+        if (child && !child.isNamed && child.type === "]" && child.startIndex >= ty.endIndex) {
+          return true;
+        }
+      }
+      return false;
     }
     var quiet = () => void 0;
     function readSettings(nodes, report) {
@@ -5047,6 +5218,59 @@ var require_analyze = __commonJS2({
       }
       return void 0;
     }
+    function checkPinSides(inputs, outputs, report) {
+      for (const port of [...inputs, ...outputs]) {
+        const at = port.pinsNode;
+        if (!at || !port.typeInside) {
+          continue;
+        }
+        const isInput = inputs.includes(port);
+        if (port.extraPinsNode) {
+          report(port.extraPinsNode, `"${port.name}" gives its pins on both sides; the number goes on one side, and which side it is says whether the port takes a value or gives one`);
+        } else if (isInput && port.pinsTrailing) {
+          report(at, `"${port.name}" takes a value, so its pins go before the bracket: -> ${at.text}[${port.name}: ${port.type ?? "bit"}]`);
+        } else if (!isInput && !port.pinsTrailing) {
+          report(at, `"${port.name}" gives a value, so its pins go after the bracket: ${port.emits ? "~>" : "=>"} [${port.name}: ${port.type ?? "bit"}]${at.text}`);
+        }
+      }
+    }
+    function checkPortMedia(inputs, outputs, types, report, decl) {
+      for (const port of [...inputs, ...outputs]) {
+        const at = port.idNode ?? (port.implicit ? decl : void 0);
+        if (!at) {
+          continue;
+        }
+        const label = port.name ? `"${port.name}"` : "the output this header names";
+        const medium = port.medium;
+        if (port.emits && medium !== "vibration") {
+          report(at, medium === void 0 ? `${label} leaves with ~>, which sends into the air, but its type is a ${port.type}, which travels on a wire; write ${(0, types_1.isMedium)(port.payload) ? "strength" : port.payload ?? port.type}{vibration}, or send it out with =>` : `${label} leaves with ~>, which sends into the air, but its type travels by ${medium}; send it out with =>`);
+        } else if (!port.emits && outputs.includes(port) && medium === "vibration") {
+          report(at, `${label} is a ${port.type}, which goes into the air, so it leaves with ~>, not =>`);
+        }
+        const delivery = types.deliveryOf(port.type);
+        if (medium !== void 0) {
+          const payload = port.payload;
+          const def = payload !== void 0 ? types.defs.get(payload) ?? payload : void 0;
+          for (const f of types.recordFields(def) ?? []) {
+            if (f.name in delivery) {
+              report(at, `${label} travels by ${medium}, which fills in "${f.name}" on arrival, but ${payload} has a field of that name too; rename one of them`);
+            }
+          }
+        }
+        if (port.hearNode) {
+          if (outputs.includes(port)) {
+            report(port.hearNode, `~: says how far ${label} can hear, and only an input listens`);
+          } else if (!types.measuresDistance(port.type)) {
+            report(port.hearNode, medium === void 0 ? `~: says how far ${label} can hear, but a ${port.type} arrives on a wire, where distance doesn't come into it` : `~: says how far ${label} can hear, but ${medium} doesn't measure how far anything came`);
+          } else {
+            const d = (0, tree_1.field)(port.hearNode, "distance");
+            if (d && d.type === "number" && Number(d.text) < 1) {
+              report(d, "a hearing range of 0 hears nothing; give the number of blocks this port reaches");
+            }
+          }
+        }
+      }
+    }
     function attachPorts(sig, nodes, types, report, decl) {
       let [inputs, outputs] = readPorts(nodes, types);
       const nIn = typeof sig.inputs === "number" ? sig.inputs : void 0;
@@ -5061,6 +5285,9 @@ var require_analyze = __commonJS2({
             name: "",
             implicit: true,
             type: sig.ret,
+            medium: types.mediumOf(sig.ret),
+            payload: types.payloadOf(sig.ret),
+            kind: types.kindOf(sig.ret),
             s: 0,
             e: nOut - 1,
             variadic: false,
@@ -5080,6 +5307,8 @@ var require_analyze = __commonJS2({
           report(port.unwiredNode, `an unwired pin always reads 0, so = 0 is the only way to mark "${port.name}" optional`);
         }
       }
+      checkPinSides(inputs, outputs, report);
+      checkPortMedia(inputs, outputs, types, report, decl);
       [sig.settings, sig.settingOrder] = readSettings(nodes, report);
       for (const name2 of sig.settingOrder) {
         const def = sig.settings.get(name2);
@@ -5093,7 +5322,270 @@ var require_analyze = __commonJS2({
       sig.varIn = checkVariadic(inputs, sig.inputs, sig.inMin, sig.inMax, sig, "input", decl, report);
       sig.varOut = checkVariadic(outputs, sig.outputs, sig.outMin, sig.outMax, sig, "output", decl, report);
       sig.declaredOutputs = outputs.filter((p) => !p.implicit).length;
+      sig.timing = computeTiming(sig, nodes);
       return [inLayout, outLayout];
+    }
+    var zeroDelay = () => ({ ticks: 0, symbols: [] });
+    function addDelays(a, b) {
+      return { ticks: a.ticks + b.ticks, symbols: [...a.symbols, ...b.symbols] };
+    }
+    function delayKey(d) {
+      return `${d.ticks}|${[...d.symbols].sort().join("+")}`;
+    }
+    function showDelay(d) {
+      if (d.symbols.length === 0) {
+        return d.ticks === 0 ? "same tick" : showTime(d.ticks);
+      }
+      const counts = /* @__PURE__ */ new Map();
+      for (const sym of d.symbols) {
+        counts.set(sym, (counts.get(sym) ?? 0) + 1);
+      }
+      const parts2 = [...counts].map(([sym, n]) => n === 1 ? sym : `${n} \xD7 ${sym}`);
+      if (d.ticks !== 0) {
+        parts2.push(showTime(d.ticks));
+      }
+      return parts2.join(" + ");
+    }
+    function showDelays(ds) {
+      if (ds.length === 0) {
+        return "";
+      }
+      const seen = /* @__PURE__ */ new Map();
+      for (const d of ds) {
+        if (!seen.has(delayKey(d))) {
+          seen.set(delayKey(d), d);
+        }
+      }
+      const uniq = [...seen.values()];
+      if (uniq.length === 1) {
+        return showDelay(uniq[0]);
+      }
+      if (uniq.every((d) => d.symbols.length === 0)) {
+        const ns = uniq.map((d) => d.ticks);
+        return `${showDelay({ ticks: Math.min(...ns), symbols: [] })} .. ${showDelay({ ticks: Math.max(...ns), symbols: [] })}`;
+      }
+      const texts = uniq.map(showDelay);
+      return texts.length > 3 ? `${texts.slice(0, 3).join(", ")}, \u2026` : texts.join(", ");
+    }
+    var EVENT_TYPES = /* @__PURE__ */ new Set(["event_block", "change_block", "hear_block"]);
+    function durationOf(node) {
+      if (!node) {
+        return zeroDelay();
+      }
+      if (node.type === "time") {
+        const gt = parseTime(node.text);
+        return gt === void 0 ? { ticks: 0, symbols: [node.text] } : { ticks: gt, symbols: [] };
+      }
+      return { ticks: 0, symbols: [(0, types_1.norm)(node.text)] };
+    }
+    function namesIn(node) {
+      const out2 = [];
+      (0, tree_1.walk)(node, (x) => {
+        if (x.type === "identifier") {
+          out2.push(x.text);
+        }
+      });
+      return out2;
+    }
+    function computeTiming(sig, nodes) {
+      const events = [];
+      const continuous = [];
+      for (const n of nodes) {
+        if (EVENT_TYPES.has(n.type)) {
+          const trigger = (0, tree_1.field)(n, "trigger") ?? (0, tree_1.field)(n, "source");
+          const body2 = (0, tree_1.first)(n, "block");
+          if (trigger && body2) {
+            events.push({ from: trigger.text, body: body2 });
+          }
+        } else {
+          continuous.push(n);
+        }
+      }
+      const triggered = new Set(events.map((e) => e.from));
+      for (const port of sig.inPorts) {
+        if (port.name && !triggered.has(port.name)) {
+          events.push({ from: port.name, body: void 0 });
+        }
+      }
+      if (events.length === 0) {
+        return [];
+      }
+      const edges = [];
+      const addEdge = (extraFrom, stmt) => {
+        const from = [...extraFrom];
+        const to = [];
+        let delay = zeroDelay();
+        for (const child of stmt.children) {
+          if (!child) {
+            continue;
+          }
+          const t = child.type;
+          if (t === "flow_source" || t === "pattern_result") {
+            from.push(...namesIn(child));
+          } else if (t === "flow_destination") {
+            const id = (0, tree_1.first)(child);
+            if (id && id.type === "identifier") {
+              to.push(id.text);
+            }
+          } else if (t === "state_write") {
+            const id = (0, tree_1.first)(child, "identifier");
+            if (id) {
+              to.push(id.text);
+            }
+          } else if (t === "delay") {
+            delay = addDelays(delay, durationOf((0, tree_1.field)(child, "time")));
+          } else if (t === "vibration_link") {
+            const dist = (0, tree_1.field)(child, "distance");
+            delay = addDelays(delay, { ticks: 0, symbols: [`${dist ? (0, types_1.norm)(dist.text) : "?"} blocks`] });
+          } else if (!child.isNamed && (t === "=>" || t === "~>")) {
+            to.push("=>");
+          }
+        }
+        if (from.length > 0 && to.length > 0) {
+          edges.push({ from, to, delay });
+        }
+      };
+      const collectContinuous = (stmt) => {
+        if (stmt.type === "each_block") {
+          const b = (0, tree_1.first)(stmt, "block");
+          for (const s2 of b ? (0, tree_1.kids)(b) : []) {
+            collectContinuous(s2);
+          }
+          return;
+        }
+        if (stmt.type === "pattern_match") {
+          const subject = (0, tree_1.field)(stmt, "subject");
+          const base = subject ? namesIn(subject) : [];
+          for (const kase of (0, tree_1.kids)(stmt, "pattern_case")) {
+            const body2 = (0, tree_1.first)(kase, "block");
+            if (body2) {
+              for (const s2 of (0, tree_1.kids)(body2)) {
+                collectContinuous(s2);
+              }
+            } else {
+              addEdge(base, kase);
+            }
+          }
+          return;
+        }
+        if (stmt.type === "flow") {
+          addEdge([], stmt);
+        }
+      };
+      for (const n of continuous) {
+        collectContinuous(n);
+      }
+      const targets = new Set(sig.outPorts.filter((p) => !p.implicit && p.name).map((p) => p.name));
+      if (targets.size === 0) {
+        targets.add("=>");
+      }
+      const paths = [];
+      for (const ev of events) {
+        const reach = /* @__PURE__ */ new Map();
+        const record = (name2, d) => {
+          const list = reach.get(name2) ?? [];
+          if (!list.some((x) => delayKey(x) === delayKey(d))) {
+            list.push(d);
+          }
+          reach.set(name2, list);
+        };
+        const chain = (stmt, acc) => {
+          let d = acc;
+          for (const child of stmt.children) {
+            if (!child) {
+              continue;
+            }
+            const t = child.type;
+            if (t === "delay") {
+              d = addDelays(d, durationOf((0, tree_1.field)(child, "time")));
+            } else if (t === "vibration_link") {
+              const dist = (0, tree_1.field)(child, "distance");
+              d = addDelays(d, { ticks: 0, symbols: [`${dist ? (0, types_1.norm)(dist.text) : "?"} blocks`] });
+            } else if (t === "flow_destination") {
+              const id = (0, tree_1.first)(child);
+              if (id && id.type === "identifier") {
+                record(id.text, d);
+              }
+            } else if (t === "state_write") {
+              const id = (0, tree_1.first)(child, "identifier");
+              if (id) {
+                record(id.text, d);
+              }
+            } else if (t === "block") {
+              visit(child, d);
+            } else if (!child.isNamed && (t === "=>" || t === "~>")) {
+              record("=>", d);
+            }
+          }
+        };
+        const step = (stmt, acc) => {
+          const t = stmt.type;
+          if (t === "after_block") {
+            const body2 = (0, tree_1.first)(stmt, "block");
+            if (body2) {
+              visit(body2, addDelays(acc, durationOf((0, tree_1.field)(stmt, "delay"))));
+            }
+          } else if (t === "sequence_block") {
+            const per = durationOf((0, tree_1.field)(stmt, "delay"));
+            const body2 = (0, tree_1.first)(stmt, "block");
+            let d = acc;
+            for (const s2 of body2 ? (0, tree_1.kids)(body2) : []) {
+              d = addDelays(d, per);
+              step(s2, d);
+            }
+          } else if (t === "each_block") {
+            const body2 = (0, tree_1.first)(stmt, "block");
+            if (body2) {
+              visit(body2, acc);
+            }
+          } else if (t === "pattern_match") {
+            for (const kase of (0, tree_1.kids)(stmt, "pattern_case")) {
+              chain(kase, acc);
+            }
+          } else if (t === "flow") {
+            chain(stmt, acc);
+          } else if (EVENT_TYPES.has(t)) {
+          }
+        };
+        const visit = (body2, acc) => {
+          for (const stmt of (0, tree_1.kids)(body2)) {
+            step(stmt, acc);
+          }
+        };
+        record(ev.from, zeroDelay());
+        if (ev.body) {
+          visit(ev.body, zeroDelay());
+        }
+        for (let pass = 0; pass < 8; pass++) {
+          let changed = false;
+          for (const edge of edges) {
+            for (const src of edge.from) {
+              for (const d of reach.get(src) ?? []) {
+                for (const dst of edge.to) {
+                  if ((reach.get(dst)?.length ?? 0) >= 4) {
+                    continue;
+                  }
+                  const before = reach.get(dst)?.length ?? 0;
+                  record(dst, addDelays(d, edge.delay));
+                  if ((reach.get(dst)?.length ?? 0) !== before) {
+                    changed = true;
+                  }
+                }
+              }
+            }
+          }
+          if (!changed) {
+            break;
+          }
+        }
+        for (const target of targets) {
+          const ds = reach.get(target);
+          if (ds && ds.length > 0) {
+            paths.push({ from: ev.from, to: target, delays: ds });
+          }
+        }
+      }
+      return paths;
     }
     function findPort(ports, name2) {
       return (ports ?? []).find((p) => p.name === name2);
@@ -5134,6 +5626,7 @@ var require_analyze = __commonJS2({
             port.idNode = void 0;
             port.pinsNode = void 0;
             port.unwiredNode = void 0;
+            port.hearNode = void 0;
           }
         }
         for (const def of sig.settings.values()) {
@@ -5187,6 +5680,19 @@ var require_analyze = __commonJS2({
           types.defs.set(n.text, d.text);
           types.origins.set(n.text, { path: path2, range: (0, tree_1.rangeOf)(n) });
           mark(n, "type");
+        }
+      }
+      {
+        let open = false;
+        for (const child of (0, tree_1.kids)(root)) {
+          if (child.type === "function_declaration") {
+            open = true;
+          } else if (child.type === "block_end") {
+            if (!open) {
+              add(child, '";" closes the component above it, and no component is open here');
+            }
+            open = false;
+          }
         }
       }
       for (const imp of (0, tree_1.kids)(root, "import_statement")) {
@@ -5253,7 +5759,7 @@ var require_analyze = __commonJS2({
         }
         const id = (0, tree_1.first)(x, "identifier");
         if (id && !types.defs.has(id.text)) {
-          add(id, `unknown type "${id.text}"; declare it with TYPE or import it with USE`, config.unknownComponentSeverity);
+          add(id, (0, types_1.isMedium)(id.text) ? `"${id.text}" is a medium, not a type; it says how a value travels, so write what travels and put it in braces: strength{${id.text}}` : `unknown type "${id.text}"; declare it with TYPE or import it with USE`, config.unknownComponentSeverity);
         } else if (id) {
           mark(id, "type");
         }
@@ -5267,6 +5773,7 @@ var require_analyze = __commonJS2({
       const scopes = splitComponents(root).map((c) => ({
         decl: c.decl,
         nodes: c.nodes,
+        closed: c.closed,
         values: /* @__PURE__ */ new Map(),
         instances: /* @__PURE__ */ new Map()
       }));
@@ -5304,6 +5811,7 @@ var require_analyze = __commonJS2({
         }
         const [inLayout, outLayout] = attachPorts(sig, scope.nodes, types, (n, m, sev) => add(n, m, sev), scope.decl);
         unusedPinsWarning(scope, inLayout, "input");
+        let splitsRecord = false;
         const rm = /^([A-Za-z_&][A-Za-z0-9_&]*)(.*)$/s.exec(sig.ret ?? "");
         const rname = rm?.[1];
         const rarg = rm?.[2] ?? "";
@@ -5336,12 +5844,51 @@ var require_analyze = __commonJS2({
               }
             }
           }
+          splitsRecord = any;
+        }
+        if (scope.decl) {
+          const declaredOut = sig.outPorts.filter((p) => !p.implicit);
+          if (sig.retArrow && declaredOut.length > 0 && !splitsRecord) {
+            add(scope.decl, `${sig.name} declares ${declaredOut.length === 1 ? "an output port" : `${declaredOut.length} output ports`} (${declaredOut.map((p) => p.name).join(", ")}), which give the types; drop the "${sig.retArrow} ${sig.ret}" from the header`);
+          } else if (!sig.retArrow && declaredOut.length === 0 && sig.outputs !== 0) {
+            add(scope.decl, `${sig.name} has no output ports, so the header says what it yields; add a return type like "=> bit", or declare its outputs below`);
+          }
         }
         if (sig.declaredOutputs > 0) {
           unusedPinsWarning(scope, outLayout, "output");
         }
       }
+      const checkClosers = (scope) => {
+        const blocks = [];
+        for (const n of scope.nodes) {
+          (0, tree_1.walk)(n, (x) => {
+            if (x.type === "block" || x.type === "pattern_match") {
+              blocks.push(x);
+            }
+          });
+        }
+        const closed = blocks.filter((b) => !!(0, tree_1.first)(b, "block_end"));
+        if (closed.length === 0 || closed.length === blocks.length) {
+          if (closed.length === 0 || !scope.decl || scope.closed) {
+            return;
+          }
+          add(scope.decl, `${scope.sig?.name ?? "this component"} closes its blocks with ";", so close the component too: a ";" of its own on the last line`, config.unclosedBlockSeverity);
+          return;
+        }
+        for (const b of blocks) {
+          if ((0, tree_1.first)(b, "block_end")) {
+            continue;
+          }
+          const end = (0, tree_1.rangeOf)(b).end;
+          diags.push({
+            range: { start: end, end },
+            message: b.type === "pattern_match" ? 'this pattern has no ";", and the others in this component do; a closer that is there sometimes hides the one that is missing' : 'this block has no ";", and the others in this component do; a closer that is there sometimes hides the one that is missing',
+            severity: config.unclosedBlockSeverity
+          });
+        }
+      };
       for (const scope of scopes) {
+        checkClosers(scope);
         checkScope(scope);
       }
       function checkScope(scope) {
@@ -5364,7 +5911,13 @@ var require_analyze = __commonJS2({
             add(idNode, `"${name2}" is already declared in this component`, exports2.WARN);
           }
           if (!existing || existing.kind === "wire") {
-            const v = { kind, type: typeText, defRange: existing?.defRange ?? (0, tree_1.rangeOf)(idNode) };
+            const v = {
+              kind,
+              type: typeText,
+              read: existing?.read,
+              defNode: existing?.defNode ?? idNode,
+              defRange: existing?.defRange ?? (0, tree_1.rangeOf)(idNode)
+            };
             values.set(name2, v);
             return v;
           }
@@ -5464,6 +6017,36 @@ var require_analyze = __commonJS2({
             add(typeNode, `"${typeName}" is not a component type here; declare it in this file or import it with USE`, config.unknownComponentSeverity);
           } else if (sig) {
             mark(typeNode);
+          }
+          const listNode = (0, tree_1.field)(node, "instances");
+          for (const content of listNode ? (0, tree_1.kids)(listNode) : []) {
+            const inner = (0, tree_1.first)(content);
+            if (!inner) {
+              continue;
+            }
+            if (inner.type === "instance_ref") {
+              const dims = [];
+              let bad = false;
+              for (const ix of (0, tree_1.kids)(inner, "index")) {
+                const v = num((0, tree_1.field)(ix, "value"));
+                const [a, b] = rangeNums(ix);
+                if (v !== void 0) {
+                  dims.push([v, v]);
+                } else if (a !== void 0 && b !== void 0) {
+                  dims.push([Math.min(a, b), Math.max(a, b)]);
+                } else {
+                  bad = true;
+                }
+              }
+              registerInstance((0, tree_1.field)(inner, "name"), bad ? void 0 : dims, sig, typeName, bad);
+              if (bad) {
+                add(inner, `"${(0, tree_1.field)(inner, "name")?.text ?? ""}" is being declared, so its indices need a definite size, like [${(0, tree_1.field)(inner, "name")?.text ?? "part"}{0..7}]`);
+              }
+            } else if (inner.type === "identifier") {
+              registerInstance(inner, void 0, sig, typeName);
+            } else {
+              registerInstance((0, tree_1.first)(inner, "identifier"), void 0, sig, typeName);
+            }
           }
           const chosenNode = (0, tree_1.field)(node, "settings");
           if (sig && typeName && typeNode) {
@@ -5584,10 +6167,10 @@ var require_analyze = __commonJS2({
               }
               return false;
             } else if (t === "state_declaration") {
-              const ty = (0, tree_1.first)(x, "type");
-              const id = (0, tree_1.first)(x, "identifier");
-              declare(id, "state", ty ? ty.text : void 0);
-              const en = ty ? (0, tree_1.first)(ty, "enum_type") : void 0;
+              const allowed = (0, tree_1.field)(x, "allowed");
+              const id = (0, tree_1.field)(x, "name");
+              declare(id, "state", allowed ? (0, types_1.norm)(allowed.text) : void 0);
+              const en = allowed && allowed.type === "setting_options" ? allowed : void 0;
               if (en && id) {
                 const def = { name: id.text, options: [], optionSet: /* @__PURE__ */ new Set() };
                 for (const o of (0, tree_1.kids)(en, "identifier")) {
@@ -5628,7 +6211,7 @@ var require_analyze = __commonJS2({
             return void 0;
           });
         }
-        const maxFor = (typeName) => typeName ? types_1.LEVELS[typeName] : void 0;
+        const maxFor = (typeName) => types.level(typeName);
         const refNameNode = (ref) => ref.type === "instance_ref" ? (0, tree_1.field)(ref, "name") : ref;
         const checkIndices = (ref, inst, name2, silent = false) => {
           let ok = true;
@@ -5865,6 +6448,10 @@ var require_analyze = __commonJS2({
           const name2 = id.text;
           const v = values.get(name2);
           if (v) {
+            v.read = true;
+            if (ctx === "trigger" && types.kindOf(v.type) === "event") {
+              add(id, `WAIT and CHANGE watch a level, but "${name2}" is a ${v.type}: it exists only in the tick it arrives; read it with HEAR(vib IN ${name2})`);
+            }
             if (v.kind === "setting") {
               const ok = ctx === "subject" || ctx === "operand" && v.type === "number";
               if (!ok) {
@@ -6063,6 +6650,112 @@ var require_analyze = __commonJS2({
             add(ref, `${sig.name} has ${limit} ${side === "in" ? "input" : "output"} pin${s(limit)} (${pinSpan(limit)}); pin ${pin} does not exist`);
           }
         };
+        const sourceType = (el) => {
+          const t = el.type;
+          if (t === "identifier") {
+            return values.get(el.text)?.type;
+          }
+          if (t === "field_access") {
+            return void 0;
+          }
+          let refs = [];
+          let portNode;
+          if (t === "output_ref") {
+            portNode = portNodeOf(el);
+            const arr = (0, tree_1.first)(el, "component_array");
+            refs = arr ? bracketIds(arr) : [];
+          } else if (t === "parameter_ref") {
+            portNode = portNodeOf(el);
+            refs = refItems(el);
+          } else if (t === "component_array") {
+            refs = bracketIds(el);
+          } else {
+            return void 0;
+          }
+          if (refs.length !== 1) {
+            return void 0;
+          }
+          const r = resolveRef(refs[0], false);
+          if (r && r.kind === "value") {
+            return r.value.type;
+          }
+          if (!(r && r.kind === "part" && r.sig)) {
+            return void 0;
+          }
+          if (portNode) {
+            return findPort(r.sig.outPorts, portNode.text)?.type;
+          }
+          const declared = r.sig.outPorts.filter((p) => !p.implicit);
+          return declared.length === 1 ? declared[0].type : r.sig.ret || void 0;
+        };
+        const destType = (el) => {
+          if (el.type === "identifier") {
+            return values.get(el.text)?.type;
+          }
+          if (el.type !== "parameter_ref") {
+            return void 0;
+          }
+          const portNode = portNodeOf(el);
+          const refs = refItems(el);
+          if (!portNode || refs.length !== 1) {
+            return void 0;
+          }
+          const r = resolveRef(refs[0], false);
+          return r && r.kind === "part" && r.sig ? findPort(r.sig.inPorts, portNode.text)?.type : void 0;
+        };
+        const checkAirLink = (link) => {
+          const ends = [
+            [link.previousNamedSibling, "sends", "emit"],
+            [link.nextNamedSibling, "takes", "hear"]
+          ];
+          for (const [el, verb, fix] of ends) {
+            const inner = el ? (0, tree_1.first)(el) : void 0;
+            if (!el || !inner) {
+              continue;
+            }
+            const ty = verb === "sends" ? sourceType(inner) : destType(inner);
+            if (ty !== void 0 && types.mediumOf(ty) !== "vibration") {
+              add(el, `~( )~> crosses open air, but this end ${verb} a ${ty}, which travels ${howItTravels(types.mediumOf(ty))}; ${fix} it as something{vibration}, or use -> instead`);
+            }
+          }
+        };
+        const namesAPart = (el) => {
+          let refs = [];
+          if (el.type === "output_ref") {
+            const arr = (0, tree_1.first)(el, "component_array");
+            refs = arr ? bracketIds(arr) : [];
+          } else if (el.type === "parameter_ref") {
+            refs = refItems(el);
+          } else if (el.type === "component_array") {
+            refs = bracketIds(el);
+          } else {
+            return false;
+          }
+          return refs.some((ref) => {
+            const r = resolveRef(ref, false);
+            return !!r && r.kind === "part";
+          });
+        };
+        const howItTravels = (medium) => medium === void 0 ? "on a wire" : medium === "vibration" ? "through the air" : `by ${medium}`;
+        const checkLink = (at, from, toType, what, report) => {
+          const fromType = sourceType(from);
+          if (fromType === void 0 || toType === void 0) {
+            return;
+          }
+          const a = types.mediumOf(fromType);
+          const b = types.mediumOf(toType);
+          if (a !== b) {
+            report(at, `"${from.text.replace(/\s+/g, " ")}" travels ${howItTravels(a)}, but ${what} arrives ${howItTravels(b)}; a link carries one or the other`);
+            return;
+          }
+          if (a === "contact") {
+            const pa = (0, types_1.norm)(types.payloadOf(fromType) ?? "");
+            const pb = (0, types_1.norm)(types.payloadOf(toType) ?? "");
+            if (pa !== pb && pa !== "" && pb !== "") {
+              report(at, `"${from.text.replace(/\s+/g, " ")}" offers ${pa} by contact, but ${what} takes ${pb}; touching blocks have to mean the same thing by it`);
+            }
+          }
+        };
         const sourceWidth = (el) => {
           const t = el.type;
           if (t === "number") {
@@ -6129,6 +6822,7 @@ var require_analyze = __commonJS2({
           }
           return source.text.replace(/\s+/g, " ");
         };
+        const hearsAt = (sig, from, to) => sig.inPorts.some((p) => p.kind === "event" && p.s !== void 0 && from <= (p.e ?? p.s) && to >= p.s);
         const addDriver = (inst, from, to, key, node) => {
           let pins = drivers.get(inst);
           if (!pins) {
@@ -6231,6 +6925,9 @@ var require_analyze = __commonJS2({
                 if (ow !== void 0 && ow !== width) {
                   report(dest, `"${source.text.replace(/\s+/g, " ")}" is ${width} pin${s(width)} wide, but output ${dest.text} is a ${out2.type} (${ow} pin${s(ow)})`);
                 }
+                if (out2 && out2.kind === "output" && namesAPart(source)) {
+                  checkLink(dest, source, out2.type, `output "${dest.text}"`, report);
+                }
               } else if (width !== void 0 && dest.type === "parameter_ref") {
                 const portNode = portNodeOf(dest);
                 const key = sourceKey(source, assign);
@@ -6270,7 +6967,8 @@ var require_analyze = __commonJS2({
                       if (pw !== void 0 && width !== pw) {
                         report(dest, `"${label}" is ${width} pin${s(width)} wide, but ${port.name} of ${sig.name} is a ${port.type} (${pw} pin${s(pw)})`);
                       }
-                      if (port.s !== void 0 && port.e !== void 0 && names && key !== void 0) {
+                      checkLink(dest, source, port.type, `${port.name} of ${sig.name}`, report);
+                      if (port.s !== void 0 && port.e !== void 0 && names && key !== void 0 && port.kind !== "event") {
                         for (const nm of names) {
                           addDriver(nm, port.s, port.e, key, dest);
                         }
@@ -6283,7 +6981,7 @@ var require_analyze = __commonJS2({
                       if (nPins !== void 0 && width > 1 && k + width - 1 > nPins - 1) {
                         report(dest, `"${label}" is ${width} pins wide; starting at pin ${k} it needs pins ${k}..${k + width - 1}, but ${sig.name} has ${pinSpan(nPins)}`);
                       }
-                      if (key !== void 0) {
+                      if (key !== void 0 && !hearsAt(sig, k, k + width - 1)) {
                         for (const nm of names ?? []) {
                           addDriver(nm, k, k + width - 1, key, dest);
                         }
@@ -6359,24 +7057,28 @@ var require_analyze = __commonJS2({
             return;
           }
           const declared = sig.outPorts.filter((p) => !p.implicit);
-          const emits = declared.length === 1 && declared[0].emits || declared.length === 0 && sig.emits;
+          const namedOut = (y) => y.value && y.value.type === "identifier" ? findPort(declared, y.value.text) : void 0;
+          const bare = yields.filter((y) => !namedOut(y));
           for (const y of yields) {
-            if (declared.length < 2 && emits && y.arrow === "=>") {
-              add(y.node, `${sig.name} emits into the air, so its output leaves with ~>, not =>`);
-            } else if (declared.length < 2 && !emits && y.arrow === "~>") {
-              add(y.node, `${sig.name} drives a wire, so its output leaves with =>; ~> is for vibrations sent into the air`);
+            const port = namedOut(y);
+            const goesToAir = port ? port.medium === "vibration" : declared.length === 1 ? declared[0].medium === "vibration" : sig.emits;
+            const what = port ? `${sig.name}'s "${port.name}"` : sig.name;
+            if ((port || declared.length < 2) && goesToAir && y.arrow === "=>") {
+              add(y.node, `${what} goes into the air, so it leaves with ~>, not =>`);
+            } else if ((port || declared.length < 2) && !goesToAir && y.arrow === "~>") {
+              add(y.node, `${what} travels on a wire, so it leaves with =>; ~> is for what goes into the air`);
             }
           }
           if (declared.length >= 2) {
             const names = declared.map((p) => p.name);
-            for (const y of yields) {
+            for (const y of bare) {
               add(y.node, `${sig.name} has several outputs (${names.join(", ")}), so a bare "=>" is ambiguous; send to one by name, e.g. -> ${names[0]}`);
             }
           } else {
             const targetType = (declared.length === 1 ? declared[0].type : void 0) || sig.ret;
             const tw = types.width(targetType);
             for (const y of yields) {
-              const limit = targetType ? types_1.LEVELS[targetType] : void 0;
+              const limit = types.level(targetType);
               if (y.value && y.value.type === "number" && limit !== void 0) {
                 const n = num(y.value);
                 if (n !== void 0 && n > limit) {
@@ -6599,12 +7301,27 @@ var require_analyze = __commonJS2({
         const carriesSignal = (n) => {
           if (n.type === "identifier") {
             const v = values.get(n.text);
-            return !!v && v.kind !== "setting";
+            if (v) {
+              return v.kind !== "setting";
+            }
+            return !!hearBlockFor(n, n.text);
+          }
+          if (n.type === "field_access") {
+            return !isDeliveryAccess(n);
           }
           if (n.type === "operator_call") {
             return (0, tree_1.fields)(n, "arg").some(carriesSignal);
           }
           return false;
+        };
+        const isDeliveryAccess = (fa) => {
+          const obj = (0, tree_1.field)(fa, "object");
+          const fld = (0, tree_1.field)(fa, "field");
+          if (!obj || !fld) {
+            return false;
+          }
+          const ty = hearBlockFor(fa, obj.text) ? hearVarType(fa, obj.text) : values.get(obj.text)?.type;
+          return fld.text in types.deliveryOf(ty);
         };
         const callIsWide = (call) => {
           const op = OPERATORS[(0, tree_1.field)(call, "name")?.text ?? ""];
@@ -6615,7 +7332,10 @@ var require_analyze = __commonJS2({
           if (op.wideUnlessSignal && args2.some(carriesSignal)) {
             return false;
           }
-          if (args2.some((a) => a.type === "field_access")) {
+          if (args2.some((a) => a.type === "field_access" && isDeliveryAccess(a))) {
+            return true;
+          }
+          if (args2.some((a) => a.type === "operator_call" && callIsWide(a))) {
             return true;
           }
           return op.wideUnlessSignal || !op.wide;
@@ -6704,65 +7424,78 @@ var require_analyze = __commonJS2({
           }
         };
         const checkStateDecl = (sd) => {
-          const ty = (0, tree_1.first)(sd, "type");
-          const en = ty ? (0, tree_1.first)(ty, "enum_type") : void 0;
-          if (en) {
-            const ids = (0, tree_1.kids)(sd, "identifier");
-            const v = ids[0] ? values.get(ids[0].text) : void 0;
-            const def = v?.enumDef;
-            if (def) {
-              const opts = def.options.join(", ");
-              if (ids[1] && !def.optionSet.has(ids[1].text)) {
-                add(ids[1], `"${ids[1].text}" is not one of ${def.name}'s options: ${opts}`);
-              }
-              const n02 = (0, tree_1.first)(sd, "number");
-              if (n02) {
-                add(n02, `${def.name} holds one of ${opts}, not a number`);
-              }
+          const nameNode = (0, tree_1.field)(sd, "name");
+          const allowed = (0, tree_1.field)(sd, "allowed");
+          const dflt = (0, tree_1.field)(sd, "default");
+          if (!nameNode || !allowed) {
+            return;
+          }
+          const name2 = nameNode.text;
+          const def = values.get(name2)?.enumDef;
+          if (def) {
+            const opts = def.options.join(", ");
+            if (dflt && dflt.type === "identifier" && !def.optionSet.has(dflt.text)) {
+              add(dflt, `"${dflt.text}" is not one of ${name2}'s options: ${opts}`);
+            } else if (dflt && dflt.type !== "identifier") {
+              add(dflt, `${name2} holds one of ${opts}, not ${dflt.type === "number" ? "a number" : "a time"}`);
             }
             return;
           }
-          const tname = ty?.text;
-          const w = types.width(tname);
-          if (!tname || w === void 0) {
+          if (allowed.type === "time_range") {
+            const a = parseTime((0, tree_1.field)(allowed, "start")?.text ?? "");
+            const b = parseTime((0, tree_1.field)(allowed, "end")?.text ?? "");
+            if (a !== void 0 && b !== void 0 && b < a) {
+              add(allowed, `${allowed.text} runs backwards; write it smallest first`);
+            }
+            if (dflt && dflt.type !== "time" && dflt.type !== "identifier") {
+              add(dflt, `"${name2}" holds a time; give one like 2gt or 1rt`);
+            }
             return;
           }
-          const n0 = (0, tree_1.first)(sd, "number");
-          const limit = types_1.LEVELS[tname];
-          const n = num(n0);
-          if (n0 && limit !== void 0 && n !== void 0 && n > limit) {
-            add(n0, `${n} does not fit in a ${tname} (max ${limit})`);
+          const lo = num((0, tree_1.field)(allowed, "start"));
+          const hi = num((0, tree_1.field)(allowed, "end"));
+          if (lo !== void 0 && hi !== void 0 && hi < lo) {
+            add(allowed, `${allowed.text} runs backwards; write ${hi}..${lo}`);
+            return;
           }
-          const arr = (0, tree_1.first)(sd, "data_array");
-          if (arr) {
-            const count = (0, tree_1.kids)(arr, "data_item").length;
-            if (count !== w) {
-              add(arr, `a ${tname} has ${w} bit(s); this initializer has ${count}`);
-            }
+          const n = num(dflt);
+          if (dflt && n === void 0 && dflt.type !== "identifier") {
+            add(dflt, `"${name2}" holds a number from ${allowed.text}; give one`);
+          } else if (n !== void 0 && (lo !== void 0 && n < lo || hi !== void 0 && n > hi)) {
+            add(dflt, `${n} is outside ${name2}, which holds ${allowed.text}`);
           }
+        };
+        const hearVarType = (node, name2) => {
+          const hb = hearBlockFor(node, name2);
+          const source = hb ? (0, tree_1.field)(hb, "source") : void 0;
+          return source ? values.get(source.text)?.type : void 0;
         };
         const checkHear = (hb) => {
           const source = (0, tree_1.field)(hb, "source");
           if (source) {
-            checkValue(source, "trigger");
+            checkValue(source, "hear");
             const v2 = values.get(source.text);
-            const ty = v2?.type?.replace(/\s/g, "");
-            if (v2 && ty !== "vibration" && ty !== "{vibration}") {
-              add(source, `HEAR listens for vibrations, but "${source.text}" is a ${v2.type ?? "plain value"}; declare it as -> ${source.text}: {vibration}`);
+            if (v2 && types.kindOf(v2.type) === "level") {
+              add(source, `HEAR reads arrivals, but "${source.text}" is a ${v2.type ?? "plain value"}, which persists; declare it on a medium that arrives, e.g. -> ${source.text}: strength{vibration}, or watch it with WAIT(${source.text})`);
             }
           }
           const v = (0, tree_1.field)(hb, "var");
           if (v) {
             if (values.has(v.text) || instances.has(v.text)) {
-              add(v, `"${v.text}" is already a name in this component; pick another name for the vibration`, exports2.WARN);
+              add(v, `"${v.text}" is already a name in this component; pick another name for the arrival`, exports2.WARN);
             } else if (hearBlockFor(hb, v.text)) {
-              add(v, `"${v.text}" is already the vibration of a HEAR around this one; give this one another name`, exports2.WARN);
+              add(v, `"${v.text}" is already the arrival of a HEAR around this one; give this one another name`, exports2.WARN);
             }
           }
         };
-        const actsBeforeWhere = (stmt) => {
+        const isFilter = (pm) => (0, tree_1.kids)(pm, "pattern_case").some((kase) => {
+          const result = (0, tree_1.first)(kase, "pattern_result");
+          const cs = result ? (0, tree_1.first)(result, "control_statement") : void 0;
+          return !!cs && cs.text === "ACCEPT";
+        });
+        const actsBeforeFilter = (stmt) => {
           if (stmt.type !== "flow") {
-            return "only wires that name a value for WHERE can come before it";
+            return "only wires that name a value for the filter can come before it";
           }
           for (const child of stmt.children) {
             if (!child) {
@@ -6770,52 +7503,52 @@ var require_analyze = __commonJS2({
             }
             const ct = child.type;
             if (ct === "state_write") {
-              return "writing state before WHERE would happen for vibrations it then drops";
-            } else if (ct === "=>") {
-              return "yielding before WHERE would happen for vibrations it then drops";
+              return "writing state before the filter would happen for arrivals it then drops";
+            } else if (ct === "=>" || ct === "~>") {
+              return "yielding before the filter would happen for arrivals it then drops";
             } else if (ct === "delay" || ct === "vibration_link") {
-              return "nothing can wait before WHERE: the filter runs the moment a vibration arrives";
+              return "nothing can wait before the filter: it runs the moment something arrives";
             } else if (ct === "flow_destination") {
               const id = (0, tree_1.first)(child);
               const v = id && id.type === "identifier" ? values.get(id.text) : void 0;
               if (!(v && v.kind === "wire")) {
-                return "sending anywhere but a plain wire before WHERE would happen for vibrations it then drops";
+                return "sending anywhere but a plain wire before the filter would happen for arrivals it then drops";
               }
             }
           }
           return void 0;
         };
-        const checkWhere = (w) => {
-          const block = w.parent;
+        const checkFilter = (pm) => {
+          const block = pm.parent;
           const hear = block?.parent;
           if (!(block && block.type === "block" && hear && hear.type === "hear_block")) {
-            add(w, "WHERE filters the vibrations a HEAR accepts; it belongs in a HEAR(...) body");
-          } else {
-            let seenWhere = false;
-            for (const child of block.children) {
-              if (!child || !child.isNamed || child.type === "comment") {
-                continue;
+            add(pm, "ACCEPT answers which arrivals a HEAR takes, so this pattern belongs at the top of a HEAR(...) body");
+            return;
+          }
+          let seenFilter = false;
+          for (const child of block.children) {
+            if (!child || !child.isNamed || child.type === "comment") {
+              continue;
+            }
+            if (child.id === pm.id) {
+              seenFilter = true;
+            } else if (child.type === "pattern_match" && isFilter(child)) {
+              if (!seenFilter) {
+                add(pm, "a HEAR body has one filter; combine the conditions into one pattern");
               }
-              if (child.id === w.id) {
-                seenWhere = true;
-              } else if (child.type === "where_clause") {
-                if (!seenWhere) {
-                  add(w, "a HEAR body has one WHERE; combine the conditions into one pattern");
-                }
-              } else if (!seenWhere) {
-                const why = actsBeforeWhere(child);
-                if (why) {
-                  add(child, why + "; move this line below the WHERE");
-                }
+            } else if (!seenFilter) {
+              const why = actsBeforeFilter(child);
+              if (why) {
+                add(child, why + "; move this line below the filter");
               }
             }
           }
-          for (const kase of (0, tree_1.kids)(w, "pattern_case")) {
+          for (const kase of (0, tree_1.kids)(pm, "pattern_case")) {
             const result = (0, tree_1.first)(kase, "pattern_result");
-            const n0 = result ? (0, tree_1.first)(result, "number") : void 0;
-            const text2 = n0?.text;
-            if (text2 !== "0" && text2 !== "1") {
-              add(result ?? kase, "a WHERE arm yields 1 to keep the vibration or 0 to drop it");
+            const cs = result ? (0, tree_1.first)(result, "control_statement") : void 0;
+            const word = cs?.text;
+            if (word !== "ACCEPT" && word !== "NOP") {
+              add(result ?? kase, "an arm of a filter says ACCEPT, since a sensor can only take an arrival or leave it; write NOP to ignore a case on purpose, and anything no arm matches is dropped");
             }
           }
         };
@@ -6828,28 +7561,64 @@ var require_analyze = __commonJS2({
           const name2 = obj.text;
           let ty;
           if (hearBlockFor(fa, name2)) {
-            ty = "vibration";
+            ty = hearVarType(fa, name2);
           } else {
             const v = values.get(name2);
             if (!v) {
-              add(obj, `"${name2}" is not declared here; fields like ${name2}.freq are read from a HEAR's vibration, inside HEAR(${name2} IN ...)`, config.undeclaredSignalSeverity);
+              add(obj, `"${name2}" is not declared here; fields like ${name2}.dist are read from what a HEAR catches, inside HEAR(${name2} IN ...)`, config.undeclaredSignalSeverity);
               return;
             }
+            v.read = true;
             ty = v.type;
           }
-          const flds = ty ? exports2.FIELDS[ty] : void 0;
-          if (!flds) {
-            add(fa, `"${name2}" is a ${ty ?? "plain value"}, which has no fields`);
+          const flds = readableFields(types, ty);
+          if (Object.keys(flds).length === 0) {
+            add(fa, `"${name2}" is a ${ty ?? "plain value"}, which has no fields; it is the whole value, so write ${name2} on its own`);
             return;
           }
           if (!(fld.text in flds)) {
-            add(fld, `a ${ty} has no field "${fld.text}"; its fields are: ${fieldList(ty)}`);
+            add(fld, `a ${ty} has no field "${fld.text}"; what you can read is: ${fieldList(flds)}`);
           }
+        };
+        const targetRecordOf = (node) => {
+          let p = node.parent;
+          while (p && p.type !== "flow" && p.type !== "pattern_case") {
+            p = p.parent;
+          }
+          if (!p) {
+            return void 0;
+          }
+          let target;
+          let last;
+          for (const child of p.children) {
+            if (!child) {
+              continue;
+            }
+            const ct = child.type;
+            if (ct === "flow_destination" || ct === "pattern_result" || ct === "flow_source") {
+              last = (0, tree_1.first)(child);
+            } else if (!child.isNamed && (ct === "=>" || ct === "~>")) {
+              const declared = (scope.sig?.outPorts ?? []).filter((x) => !x.implicit);
+              const named = last && last.type === "identifier" ? findPort(declared, last.text) : void 0;
+              target = named?.type ?? (declared.length === 1 ? declared[0].type : scope.sig?.ret);
+            }
+          }
+          if (target === void 0 && last && last.type === "identifier" && last.id !== node.id) {
+            target = values.get(last.text)?.type;
+          }
+          if (target === void 0) {
+            return void 0;
+          }
+          const payload = types.payloadOf(target);
+          const def = payload !== void 0 ? types.defs.get(payload) ?? payload : void 0;
+          const flds = types.recordFields(def);
+          return flds ? { text: target, fields: flds } : void 0;
         };
         const checkNamedItem = (item) => {
           const nNode = (0, tree_1.field)(item, "name");
-          if (nNode && !(nNode.text in exports2.FIELDS.vibration)) {
-            add(nNode, `"${nNode.text}" is not a field of a vibration; its fields are: ${fieldList("vibration")}`, exports2.WARN);
+          const target = nNode ? targetRecordOf(item) : void 0;
+          if (nNode && target && !target.fields.some((f) => f.name === nNode.text)) {
+            add(nNode, `"${nNode.text}" is not a part of a ${target.text}; its parts are: ${target.fields.map((f) => f.name).join(", ")}`, exports2.WARN);
           }
           const vNode = (0, tree_1.field)(item, "value");
           if (vNode && vNode.type === "identifier") {
@@ -6863,21 +7632,17 @@ var require_analyze = __commonJS2({
               return false;
             }
             if (t === "flow" || t === "pattern_case") {
-              const p = x.parent;
-              const inWhere = t === "pattern_case" && p && p.type === "where_clause";
-              if (!inWhere) {
-                trackFlow(x);
-                let last;
-                for (const child of x.children) {
-                  if (!child) {
-                    continue;
-                  }
-                  const ct = child.type;
-                  if (ct === "flow_source" || ct === "flow_destination" || ct === "pattern_result") {
-                    last = (0, tree_1.first)(child);
-                  } else if (!child.isNamed && (ct === "=>" || ct === "~>")) {
-                    yields.push({ node: child, value: last, arrow: ct });
-                  }
+              trackFlow(x);
+              let last;
+              for (const child of x.children) {
+                if (!child) {
+                  continue;
+                }
+                const ct = child.type;
+                if (ct === "flow_source" || ct === "flow_destination" || ct === "pattern_result") {
+                  last = (0, tree_1.first)(child);
+                } else if (!child.isNamed && (ct === "=>" || ct === "~>")) {
+                  yields.push({ node: child, value: last, arrow: ct });
                 }
               }
             }
@@ -6938,7 +7703,7 @@ var require_analyze = __commonJS2({
               const id = (0, tree_1.first)(x, "identifier");
               if (id && !(0, tree_1.hasAncestor)(x, "flow_destination") && !(0, tree_1.hasAncestor)(x, "state_declaration")) {
                 const holder = x.parent?.parent;
-                const inSubject = !!holder && (holder.type === "pattern_match" || holder.type === "where_clause");
+                const inSubject = !!holder && holder.type === "pattern_match";
                 checkValue(id, inSubject ? "subject" : "flow");
               }
             } else if (t === "event_block" || t === "change_block") {
@@ -6948,9 +7713,8 @@ var require_analyze = __commonJS2({
               }
             } else if (t === "hear_block") {
               checkHear(x);
-            } else if (t === "where_clause") {
-              checkWhere(x);
-              checkPattern(x);
+            } else if (t === "vibration_link") {
+              checkAirLink(x);
             } else if (t === "field_access") {
               checkFieldAccess(x);
               return false;
@@ -6974,7 +7738,16 @@ var require_analyze = __commonJS2({
               if (id) {
                 checkValue(id, "flow");
               }
+              if (x.text === "ACCEPT") {
+                const kase = x.parent?.parent;
+                if (!(kase && kase.type === "pattern_case")) {
+                  add(x, "ACCEPT answers an arm of the filter at the top of a HEAR(...) body; on its own it says nothing");
+                }
+              }
             } else if (t === "pattern_match") {
+              if (isFilter(x)) {
+                checkFilter(x);
+              }
               checkPattern(x);
             } else if (t === "state_write") {
               checkStateWrite(x);
@@ -6993,6 +7766,11 @@ var require_analyze = __commonJS2({
             add(inst.node, `"${name2}" is declared but never wired`, exports2.WARN);
           }
         }
+        for (const [name2, v] of values) {
+          if (v.kind === "wire" && !v.read && v.defNode) {
+            add(v.defNode, `nothing reads "${name2}"; it is written here and goes nowhere, which is usually a name spelled two ways`, config.unreadWireSeverity);
+          }
+        }
       }
       (0, tree_1.walk)(root, (n) => {
         if (n.type === "type_arguments") {
@@ -7001,6 +7779,9 @@ var require_analyze = __commonJS2({
             if (open) {
               add(open, "a type needs a definite number of pins, so this range needs both ends");
             }
+          }
+          for (const t of (0, tree_1.kids)(n, "type")) {
+            add(t, `the braces after a type name take a lane count like {0..3} or a medium (${types_1.MEDIUM_NAMES.join(", ")}); "${(0, types_1.norm)(t.text)}" is neither`);
           }
         } else if (n.type === "vibration_link") {
           const open = openEnd((0, tree_1.field)(n, "distance"));
@@ -7222,9 +8003,11 @@ var analyze_1 = require_analyze();
 var parser_1 = require_parser();
 var workspace_1 = require_workspace();
 async function main() {
-  const files = process.argv.slice(2);
+  const args2 = process.argv.slice(2);
+  const timing = args2.includes("--timing");
+  const files = args2.filter((a) => !a.startsWith("--"));
   if (files.length === 0) {
-    console.error("usage: tikker-check FILE.tkr...");
+    console.error("usage: tikker-check [--timing] FILE.tkr...");
     process.exit(2);
   }
   await (0, parser_1.initParser)();
@@ -7239,6 +8022,22 @@ async function main() {
       continue;
     }
     const model = (0, analyze_1.analyze)(text, p, ws);
+    if (timing) {
+      for (const scope of model.scopes) {
+        const sig = scope.sig;
+        if (!sig) {
+          continue;
+        }
+        const paths = sig.timing ?? [];
+        console.log(`${sig.name}:${paths.length === 0 ? " no timed path from an event to an output" : ""}`);
+        const rows = paths.map((t) => [`${t.from} -> ${t.to}`, (0, analyze_1.showDelays)(t.delays)]);
+        const w = rows.length > 0 ? Math.max(...rows.map((r) => r[0].length)) : 0;
+        for (const r of rows) {
+          console.log(`  ${r[0].padEnd(w)}   ${r[1]}`);
+        }
+      }
+      continue;
+    }
     const ds = [...model.diagnostics].sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character);
     for (const d of ds) {
       const sev = d.severity === analyze_1.ERROR ? "ERROR" : "WARN";

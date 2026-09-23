@@ -3,8 +3,7 @@
 (comment) @comment
 
 ; Keywords
-; NOTE: "STATE" is no longer a keyword -- it is a normal variable name in your
-; files (CopperBulb), so it must NOT be highlighted as a keyword.
+"STATE" @keyword
 "AFTER" @keyword
 "BEFORE" @keyword
 "SYNC" @keyword
@@ -38,12 +37,19 @@
 ":" @punctuation.delimiter
 "," @punctuation.delimiter
 
+; The end of a block or a pattern.
+(block_end) @punctuation.delimiter
+
 ; Types: the type names are blue; a projection's field (.data) and the
 ; braces around type arguments keep their own colors.
 (type
-  ["bit" "strength" "byte" "nibble" "tuple" "int" "unknown" "vibration"] @type)
+  ["bit" "strength" "byte" "nibble" "tuple" "int" "unknown"] @type)
 (type
   (identifier) @type)
+
+; How a value travels: vibration, contact. Not a type of its own, so it gets
+; its own color inside the braces.
+(medium) @type.builtin
 
 ; Numbers
 (number) @number
@@ -54,9 +60,16 @@
   (identifier) @function
   "]")
 
-; State variable names (declaration site)
+; State and setting names at their declaration. The field keeps this off the
+; default, which names one of the options rather than the variable.
 (state_declaration
-  (identifier) @variable.member)
+  name: (identifier) @variable.member)
+(setting_declaration
+  name: (identifier) @variable.member)
+(state_declaration
+  default: (identifier) @constant)
+(setting_declaration
+  default: (identifier) @constant)
 
 ; State write target (the variable written via =:)
 (state_write
@@ -101,11 +114,12 @@
 "*" @constant.builtin
 
 "HEAR" @keyword
-"WHERE" @keyword
+"ACCEPT" @keyword
 "IN" @keyword
 
 "~(" @operator
 "~>" @operator
+"~:" @operator
 "." @punctuation.delimiter
 
 (time) @number
@@ -115,6 +129,11 @@
   field: (field_name) @property)
 
 (enum_type
+  (identifier) @constant)
+
+; STATE and SETTING list their options the same way a type does, but the
+; grammar calls that list setting_options.
+(setting_options
   (identifier) @constant)
 
 (hear_block

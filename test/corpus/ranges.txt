@@ -207,8 +207,8 @@ Open and named bounds inside patterns
 Distances and stack counts as ranges
 ========================================
 
-1[Ear]1 ~> vibration:
--> heard: vibration
+1[Ear]1 ~> strength{vibration}:
+-> heard: strength{vibration} ~: 16
 INVENTORY slots: 5
 [s]: CalibratedSculkSensor
 heard ~(12..16)~> heard[s]
@@ -223,10 +223,16 @@ heard ~(12..16)~> heard[s]
     (number)
     (identifier)
     (number)
-    (type))
+    (type
+      (type_arguments
+        (medium))))
   (input_parameter
     (identifier)
-    (type))
+    (type
+      (type_arguments
+        (medium)))
+    (hearing_range
+      (number)))
   (inventory_declaration
     (inventory_slots
       (number)))

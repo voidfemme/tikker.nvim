@@ -31,7 +31,7 @@ TYPE pole_data: nibble{vibration}
     (identifier)
     (type
       (type_arguments
-        (type)))))
+        (medium)))))
 
 ========================================
 Custom and compound types on ports
@@ -39,7 +39,7 @@ Custom and compound types on ports
 
 -> dest: address
 -> lanes: {nibble{vibration}}
-=> 0..3[data]: nibble{vibration}
+=> 0..3[data: nibble{contact}]
 
 ---
 
@@ -53,7 +53,7 @@ Custom and compound types on ports
     (type
       (type
         (type_arguments
-          (type)))))
+          (medium)))))
   (output_parameter
     (pin_range
       (number)
@@ -61,16 +61,16 @@ Custom and compound types on ports
     (identifier)
     (type
       (type_arguments
-        (type)))))
+        (medium)))))
 
 ========================================
 Emission ports and a declaration that emits
 ========================================
 
-1[AmethystBlock]1 ~> vibration:
--> detected: vibration
-~> 0..3[data]: nibble{vibration}
-~> 4[strobe]: vibration
+1[AmethystBlock]1 ~> strength{vibration}:
+-> detected: strength{contact}
+~> 0..3[data: nibble{vibration}]
+~> 4[strobe]: strength{vibration}
 
 ---
 
@@ -79,10 +79,14 @@ Emission ports and a declaration that emits
     (number)
     (identifier)
     (number)
-    (type))
+    (type
+      (type_arguments
+        (medium))))
   (input_parameter
     (identifier)
-    (type))
+    (type
+      (type_arguments
+        (medium))))
   (emission_parameter
     (pin_range
       (number)
@@ -90,18 +94,20 @@ Emission ports and a declaration that emits
     (identifier)
     (type
       (type_arguments
-        (type))))
+        (medium))))
   (emission_parameter
     (pin_range
       (number))
     (identifier)
-    (type)))
+    (type
+      (type_arguments
+        (medium)))))
 
 ========================================
 Bare ~> emits, in a flow and in an arm
 ========================================
 
-{freq: vib.freq} ~>
+{strobe: ready, data: low} ~>
 {go}?
     -{1}-> vib ~>
     -{0}-> NOP
@@ -115,9 +121,11 @@ Bare ~> emits, in a flow and in an arm
         (data_item
           (named_item
             (identifier)
-            (field_access
-              (identifier)
-              (field_name)))))))
+            (identifier)))
+        (data_item
+          (named_item
+            (identifier)
+            (identifier))))))
   (pattern_match
     (data_array
       (data_item
@@ -138,7 +146,7 @@ One-name braces are a bundle, two or more are an enum
 ========================================
 
 -> inputs: {bit}
-phase: {inactive, active} = inactive
+STATE phase: {inactive, active} = inactive
 
 ---
 
@@ -149,10 +157,9 @@ phase: {inactive, active} = inactive
       (type)))
   (state_declaration
     (identifier)
-    (type
-      (enum_type
-        (identifier)
-        (identifier)))
+    (setting_options
+      (identifier)
+      (identifier))
     (identifier)))
 
 ========================================
@@ -218,21 +225,21 @@ Ports typed as fields of a record
     (type
       (identifier)
       (type_arguments
-        (type))))
+        (medium))))
   (input_parameter
     (identifier)
     (type
       (identifier)
       (field_name)
       (type_arguments
-        (type))))
+        (medium))))
   (emission_parameter
     (identifier)
     (type
       (identifier)
       (field_name)
       (type_arguments
-        (type))))
+        (medium))))
   (input_parameter
     (identifier)
     (type

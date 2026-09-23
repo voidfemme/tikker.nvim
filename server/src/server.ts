@@ -58,6 +58,8 @@ function readConfig(s: any) {
     undeclaredSignalSeverity: sevOf(c.undeclaredSignalSeverity, DEFAULT_CONFIG.undeclaredSignalSeverity),
     wiredOrSeverity: sevOf(c.wiredOrSeverity, DEFAULT_CONFIG.wiredOrSeverity),
     unusedPinSeverity: sevOf(c.unusedPinSeverity, DEFAULT_CONFIG.unusedPinSeverity),
+    unreadWireSeverity: sevOf(c.unreadWireSeverity, DEFAULT_CONFIG.unreadWireSeverity),
+    unclosedBlockSeverity: sevOf(c.unclosedBlockSeverity, DEFAULT_CONFIG.unclosedBlockSeverity),
   };
 }
 

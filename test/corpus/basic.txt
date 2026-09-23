@@ -68,19 +68,21 @@ Brace pattern with bundled component subject
 Event block with state write
 ========================================
 
-STATE: bit = 0
+STATE lit: 0..1 = 0
 WAIT(clock):
-    {STATE}?
-        -{0}-> 1 =: STATE
-        -{1}-> 0 =: STATE
-STATE =>
+    {lit}?
+        -{0}-> 1 =: lit
+        -{1}-> 0 =: lit
+lit =>
 
 ---
 
 (source_file
   (state_declaration
     (identifier)
-    (type)
+    (range
+      (number)
+      (number))
     (number))
   (event_block
     (identifier)
@@ -176,3 +178,103 @@ Arm block and NOP arm
         (number))
       (pattern_result
         (control_statement)))))
+
+========================================
+Ports in brackets, with the pin number on the side it faces
+========================================
+
+1[CopperBulb]2:
+=> [readout: strength{contact}]0
+=> [powered: observable{contact}]1
+-> 0[power: bit]
+-> [spare: bit]
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number))
+  (output_parameter
+    (identifier)
+    (type
+      (type_arguments
+        (medium)))
+    trail: (pin_range
+      start: (number)))
+  (output_parameter
+    (identifier)
+    (type
+      (identifier)
+      (type_arguments
+        (medium)))
+    trail: (pin_range
+      start: (number)))
+  (input_parameter
+    lead: (pin_range
+      start: (number))
+    (identifier)
+    (type))
+  (input_parameter
+    (identifier)
+    (type)))
+
+========================================
+Blocks and patterns closed with ";"
+========================================
+
+1[X]1 => bit:
+-> a: bit
+CHANGE(a):
+    {a}?
+        -{1}-> :
+            AFTER(1rt):
+                1 =: lit
+            ;
+        ;
+        -{0}-> NOP
+    ;
+;
+;
+
+---
+
+(source_file
+  (function_declaration
+    (number)
+    (identifier)
+    (number)
+    (type))
+  (input_parameter
+    (identifier)
+    (type))
+  (change_block
+    (identifier)
+    (block
+      (pattern_match
+        (data_array
+          (data_item
+            (identifier)))
+        (pattern_case
+          (pattern_value
+            (number))
+          (block
+            (after_block
+              (time)
+              (block
+                (flow
+                  (flow_source
+                    (number))
+                  (state_write
+                    (identifier)))
+                (block_end)))
+            (block_end)))
+        (pattern_case
+          (pattern_value
+            (number))
+          (pattern_result
+            (control_statement)))
+        (block_end))
+      (block_end)))
+  (block_end))

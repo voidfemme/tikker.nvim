@@ -11,9 +11,9 @@ import {
   MarkupKind,
   SymbolKind,
 } from 'vscode-languageserver';
-import { FIELDS, Instance, Model, OPERATOR_INFO, pinSpan, Port, ScopeInfo, SettingDef, Sig, Value } from './analyze';
+import { Instance, Model, OPERATOR_INFO, pinSpan, Port, readableFields, ScopeInfo, SettingDef, showDelays, Sig, Value } from './analyze';
 import { field, fields, first, kids, Node, Range, rangeOf } from './tree';
-import { BUILTIN_TYPES, TypeEnv } from './types';
+import { BUILTIN_TYPES, MEDIA, MEDIUM_NAMES, TypeEnv } from './types';
 import { EXTENSIONS, FileWorkspace } from './workspace';
 
 // ---------------------------------------------------------------------------
@@ -32,8 +32,10 @@ function pinsOf(p: Port): string {
 
 function portLine(p: Port, arrow: string): string {
   const pins = pinsOf(p);
-  const name = pins ? `${pins}[${p.name}]` : p.name;
-  return `${arrow} ${name}: ${p.type ?? '?'}${p.optional ? ' = 0' : ''}`;
+  const body = `${p.name}: ${p.type ?? '?'}`;
+  const name = pins ? `${pins}[${body}]` : body;
+  const hear = p.hearText !== undefined ? ` ~: ${p.hearText}` : '';
+  return `${arrow} ${name}${p.optional ? ' = 0' : ''}${hear}`;
 }
 
 function settingLine(d: SettingDef): string {
@@ -60,6 +62,20 @@ function code(text: string): string {
   return '```tikker\n' + text + '\n```';
 }
 
+/**
+ * How long this component takes, per path. Not one number: latency belongs to
+ * a path from the event that starts the clock to the output that changes.
+ */
+export function timingTable(sig: Sig): string | undefined {
+  const paths = sig.timing ?? [];
+  if (paths.length === 0) {
+    return undefined;
+  }
+  const rows = paths.map((p) => [`${p.from} → ${p.to}`, showDelays(p.delays)]);
+  const w = Math.max(...rows.map((r) => r[0].length));
+  return ['**Timing**', code(rows.map((r) => `${r[0].padEnd(w)}   ${r[1]}`).join('\n'))].join('\n\n');
+}
+
 function sigMarkdown(sig: Sig, extra?: string): string {
   const parts = [code(sigCode(sig))];
   if (extra) {
@@ -72,11 +88,41 @@ function sigMarkdown(sig: Sig, extra?: string): string {
 }
 
 function widthNote(types: TypeEnv, ty: string | undefined): string {
+  const medium = types.mediumOf(ty);
+  const how =
+    medium === 'vibration'
+      ? 'through the air'
+      : medium === 'contact'
+        ? 'by contact'
+        : undefined;
   const w = types.width(ty);
   if (w === undefined) {
-    return types.isVariadic(ty) ? 'as many pins as each part is given' : '';
+    const v = types.isVariadic(ty) ? 'as many pins as each part is given' : '';
+    return how ? [v, how].filter(Boolean).join(', ') : v;
   }
-  return `${w} pin${w === 1 ? '' : 's'}`;
+  const points = how ? `${w} connection point${w === 1 ? '' : 's'}` : `${w} pin${w === 1 ? '' : 's'}`;
+  return how ? `${points}, ${how}` : points;
+}
+
+/**
+ * The type a `name.field` reads from: what a HEAR caught, or a value in this
+ * component. The payload's record fields and the medium's delivery facts are
+ * both read this way, so both come out of readableFields on this type.
+ */
+function fieldSourceType(fa: Node, scope: ScopeInfo | undefined): string | undefined {
+  const obj = field(fa, 'object');
+  if (!obj) {
+    return undefined;
+  }
+  let p: Node | null = fa;
+  while (p) {
+    if (p.type === 'hear_block' && field(p, 'var')?.text === obj.text) {
+      const src = field(p, 'source')?.text;
+      return src ? scope?.values.get(src)?.type : undefined;
+    }
+    p = p.parent;
+  }
+  return scope?.values.get(obj.text)?.type;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +138,8 @@ export type Target =
   | { kind: 'type_field'; text: string; type: string }
   | { kind: 'setting'; sig: Sig; def: SettingDef }
   | { kind: 'operator'; name: string }
-  | { kind: 'vib_field'; name: string }
+  | { kind: 'read_field'; name: string; what: string }
+  | { kind: 'medium'; name: string }
   | { kind: 'module'; path: string; name: string };
 
 export function scopeAt(model: Model, line: number): ScopeInfo | undefined {
@@ -163,9 +210,14 @@ export function targetAt(model: Model, ws: FileWorkspace, docPath: string | unde
     return undefined;
   }
 
+  if (n.type === 'medium') {
+    return { kind: 'medium', name: n.text };
+  }
+
   if (n.type === 'field_name' && parent) {
     if (parent.type === 'field_access') {
-      return n.text in FIELDS.vibration ? { kind: 'vib_field', name: n.text } : undefined;
+      const flds = readableFields(model.types, fieldSourceType(parent, scope));
+      return n.text in flds ? { kind: 'read_field', name: n.text, what: flds[n.text] } : undefined;
     }
     if (parent.type === 'type') {
       // transmission.data: the path up to and including this field
@@ -264,11 +316,11 @@ export function hoverFor(t: Target, model: Model): string | undefined {
   const types = model.types;
   switch (t.kind) {
     case 'component':
-      return sigMarkdown(t.sig);
+      return sigMarkdown(t.sig, timingTable(t.sig));
     case 'instance': {
       const dims = t.inst.dims ? `{${t.inst.dims.map(([a, b]) => `${a}..${b}`).join(', ')}}` : '';
       const head = code(`[${t.name}${dims}]: ${t.inst.type ?? '?'}`);
-      return t.inst.sig ? head + '\n\n' + sigMarkdown(t.inst.sig) : head;
+      return t.inst.sig ? head + '\n\n' + sigMarkdown(t.inst.sig, timingTable(t.inst.sig)) : head;
     }
     case 'port': {
       const arrow = t.side === 'in' ? '->' : t.port.emits ? '~>' : '=>';
@@ -329,8 +381,22 @@ export function hoverFor(t: Target, model: Model): string | undefined {
       const count = op.max === op.min ? `${op.min}` : `${op.min} or more`;
       return [code(`${t.name}{...}`), `${op.what}. Takes ${count} value${op.min === 1 && op.max === 1 ? '' : 's'}.`].join('\n\n');
     }
-    case 'vib_field':
-      return [code(`vib.${t.name}`), `A vibration's ${t.name}: ${FIELDS.vibration[t.name]}`].join('\n\n');
+    case 'read_field':
+      return [code(`.${t.name}`), t.what].join('\n\n');
+    case 'medium': {
+      const m = MEDIA[t.name];
+      const facts = [
+        m.what,
+        m.kind === 'event'
+          ? 'An event: it exists only in the tick it arrives, so it is read with HEAR.'
+          : 'A level: it persists, so it can be watched with WAIT or CHANGE.',
+      ];
+      const delivery = Object.entries(m.delivery);
+      if (delivery.length > 0) {
+        facts.push(`The link fills in: ${delivery.map(([k, v]) => `\`${k}\` (${v})`).join(', ')}.`);
+      }
+      return [code(`strength{${t.name}}`), facts.join(' ')].join('\n\n');
+    }
     case 'module':
       return code(`USE ${t.name}`) + `\n\n${t.path}`;
   }
@@ -372,8 +438,8 @@ const KEYWORDS: [string, string, string?][] = [
   ['WAIT', 'WAIT(${1:signal}):\n\t$0', 'runs its body on a rising edge'],
   ['CHANGE', 'CHANGE(${1:signal}):\n\t$0', 'runs its body on either edge'],
   ['AFTER', 'AFTER(${1:1rt}):\n\t$0', 'runs its body that long after the event around it'],
-  ['HEAR', 'HEAR(${1:vib} IN ${2:heard}):\n\t$0', 'runs when a vibration gets through'],
-  ['WHERE', 'WHERE {${1}}?\n\t-{${2}}-> 1 =>\n\t-{**}-> 0 =>', 'keeps (1) or drops (0) each vibration'],
+  ['HEAR', 'HEAR(${1:vib} IN ${2:heard}):\n\t$0', 'runs when an arrival gets through'],
+  ['ACCEPT', 'ACCEPT', 'on a filter arm: this arrival is a candidate'],
   ['EACH', 'EACH ${1:i} IN ${2:0..3}:\n\t$0', 'builds its body once per value'],
   ['SEQ', 'SEQ(${1:1rt}):\n\t$0', 'each line fires that long after the last'],
   ['SETTING', 'SETTING ${1:name}: ${2:0..15} = ${3:0}', 'a build-time setting'],
@@ -401,15 +467,18 @@ function typeItems(types: TypeEnv): CompletionItem[] {
   return out;
 }
 
-/** A HEAR variable in effect on this line, like `vib` in HEAR(vib IN heard). */
-function hearVarsAbove(lines: string[], line: number): Set<string> {
-  const out = new Set<string>();
+/**
+ * The HEAR variables in effect on this line, each with the port it listens
+ * on: `vib` -> `heard`, from HEAR(vib IN heard).
+ */
+function hearVarsAbove(lines: string[], line: number): Map<string, string> {
+  const out = new Map<string, string>();
   const indent = (s: string) => s.length - s.trimStart().length;
   const here = indent(lines[line] ?? '');
   for (let i = line - 1; i >= 0; i--) {
-    const m = /^\s*HEAR\s*\(\s*([A-Za-z_&][\w&]*)\s+IN\b/.exec(lines[i]);
+    const m = /^\s*HEAR\s*\(\s*([A-Za-z_&][\w&]*)\s+IN\s+([A-Za-z_&][\w&]*)/.exec(lines[i]);
     if (m && indent(lines[i]) < here) {
-      out.add(m[1]);
+      out.set(m[1], m[2]);
     }
     if (/^[\d*]*\[[A-Za-z_&][\w&]*\][\d*]*\s*[=~]>/.test(lines[i])) {
       break;
@@ -587,6 +656,20 @@ export function completionsAt(
     new RegExp(`^[\\d*]+\\[${NAME}\\][\\d*]+\\s*[=~]>\\s*[\\w.{}]*$`).test(before) ||
     new RegExp(`^\\s*${NAME}\\s*:\\s*[\\w.{}]*$`).test(before)
   ) {
+    // strength{   how it travels, or how many lanes
+    if (new RegExp(`${NAME}\\{${NAME}?$`).test(before)) {
+      return MEDIUM_NAMES.map((name) =>
+        item(name, CompletionItemKind.EnumMember, MEDIA[name].what, {
+          documentation: {
+            kind: MarkupKind.Markdown,
+            value:
+              MEDIA[name].kind === 'event'
+                ? 'An event: read it with HEAR.'
+                : 'A level: it persists, like a wire.',
+          },
+        }),
+      );
+    }
     const tm = new RegExp(`(${NAME}(?:\\.${NAME})*)\\.(${NAME})?$`).exec(before);
     if (tm) {
       const r = model.types.resolveProjection(tm[1] + '.x');
@@ -607,13 +690,14 @@ export function completionsAt(
     return typeItems(model.types);
   }
 
-  // vib.freq   fields of a HEAR's vibration
+  // vib.dist   what a HEAR's arrival lets you read
   m = new RegExp(`(${NAME})\\.(${NAME})?$`).exec(before);
   if (m) {
-    if (hearVarsAbove(lines, line).has(m[1])) {
-      return Object.entries(FIELDS.vibration).map(([k, v]) => item(k, CompletionItemKind.Field, v));
-    }
-    return [];
+    const source = hearVarsAbove(lines, line).get(m[1]);
+    const ty = source !== undefined ? scope?.values.get(source)?.type : scope?.values.get(m[1])?.type;
+    return Object.entries(readableFields(model.types, ty)).map(([k, v]) =>
+      item(k, CompletionItemKind.Field, v),
+    );
   }
 
   // Durations: AFTER( and -(

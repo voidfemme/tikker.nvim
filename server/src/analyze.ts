@@ -4,7 +4,7 @@
 
 import { parse } from './parser';
 import { field, fields, first, hasAncestor, kids, Node, Range, rangeOf, spanOf, walk } from './tree';
-import { BASE_WIDTH, LEVELS, norm, trailingGroup, TypeEnv } from './types';
+import { BASE_WIDTH, isMedium, MEDIUM_NAMES, norm, trailingGroup, TypeEnv } from './types';
 
 export const ERROR = 1;
 export const WARN = 2;
@@ -15,6 +15,8 @@ export interface Config {
   undeclaredSignalSeverity: Severity;
   wiredOrSeverity: Severity;
   unusedPinSeverity: Severity;
+  unreadWireSeverity: Severity;
+  unclosedBlockSeverity: Severity;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -22,6 +24,8 @@ export const DEFAULT_CONFIG: Config = {
   undeclaredSignalSeverity: ERROR,
   wiredOrSeverity: WARN,
   unusedPinSeverity: WARN,
+  unreadWireSeverity: WARN,
+  unclosedBlockSeverity: WARN,
 };
 
 export interface Diag {
@@ -43,8 +47,23 @@ export interface Port {
   name: string;
   idNode?: Node;
   pinsNode?: Node;
+  /** whether the pin number sits after the bracket, the output side */
+  pinsTrailing?: boolean;
+  /** a second pin number, when a port wrote one on each side */
+  extraPinsNode?: Node;
+  /** whether the type is inside the brackets, the newer spelling */
+  typeInside?: boolean;
   unwiredNode?: Node;
   type?: string;
+  /** how this port's value travels; undefined is a wire */
+  medium?: string;
+  /** what it carries, with the medium taken off */
+  payload?: string;
+  /** whether the value persists, exists only on arrival, or could be either */
+  kind: 'level' | 'event' | 'either';
+  /** ~: 16 — how far this port hears, when it hears */
+  hearNode?: Node;
+  hearText?: string;
   variadic: boolean;
   emits: boolean;
   open: boolean;
@@ -85,12 +104,17 @@ export interface Sig {
   outputs: number | '*';
   outMin?: number;
   outMax?: number;
+  /** the header's return type, '' when the output ports give it instead */
   ret: string;
+  /** the header's return arrow, when it has one */
+  retArrow?: '=>' | '~>';
   declText: string;
   inPorts: Port[];
   outPorts: Port[];
   settings: Map<string, SettingDef>;
   settingOrder: string[];
+  /** how long each event takes to reach each output */
+  timing?: TimingPath[];
   varIn?: Port;
   varOut?: Port;
   declaredOutputs: number;
@@ -106,6 +130,10 @@ export interface Value {
   setting?: SettingDef;
   enumDef?: EnumDef;
   driven?: boolean;
+  /** whether anything reads it; a wire nothing reads is usually a typo */
+  read?: boolean;
+  /** where it first appears, for the warning about a wire nothing reads */
+  defNode?: Node;
   defRange?: Range;
 }
 
@@ -185,18 +213,28 @@ const OPERATORS: Record<
 };
 export const OPERATOR_INFO = OPERATORS;
 
-/** Fields of structured values, read as vib.freq and built as {freq: ...}. */
-export const FIELDS: Record<string, Record<string, string>> = {
-  vibration: {
-    freq: 'its frequency, 1..15',
-    dist: 'how far it traveled, in blocks',
-  },
-};
+/**
+ * What `name.field` can read on a value: the fields of the record it
+ * carries, plus the facts its medium's link fills in (a vibration's dist).
+ * A payload that isn't a record has only the delivery facts, since the value
+ * itself is then the whole payload: `vib` is the frequency, `vib.dist` is how
+ * far it came.
+ */
+export function readableFields(types: TypeEnv, type: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  const payload = types.payloadOf(type);
+  const def = payload !== undefined ? (types.defs.get(payload) ?? payload) : undefined;
+  for (const f of types.recordFields(def) ?? []) {
+    out[f.name] = `its ${f.name}, a ${f.type}`;
+  }
+  for (const [k, v] of Object.entries(types.deliveryOf(type))) {
+    out[k] = v;
+  }
+  return out;
+}
 
-function fieldList(ty: string): string {
-  return Object.keys(FIELDS[ty] ?? {})
-    .sort()
-    .join(', ');
+function fieldList(flds: Record<string, string>): string {
+  return Object.keys(flds).sort().join(', ');
 }
 
 /** "2gt" -> 2, "1rt" -> 2 (a redstone tick is 2 game ticks). */
@@ -264,6 +302,18 @@ const HINTS: [RegExp, string][] = [
   [/->\s*\{\s*$/, 'arm bodies use ":" and an indented block instead of { ... }'],
   [/^\s*\}/, 'arm bodies use ":" and an indented block instead of { ... }'],
   [/^\s*USE\s/, 'USE must come before every other statement (comments above it are fine)'],
+  [
+    /^\s*WHERE\s*\{/,
+    'WHERE is gone: the filter is a plain pattern whose arms say ACCEPT, e.g. {phase, gap}? with -{inactive, 0}-> ACCEPT',
+  ],
+  [
+    /^\s*(?:->|=>|~>)\s*\d+\*/,
+    '"N*" counts pins in a component header; a port that runs to the end writes it as a range, e.g. 0..*[power: {bit}]',
+  ],
+  [
+    /=:\s*[A-Za-z_&][A-Za-z0-9_&]*\s*(?:-\(|->|=>|~>)/,
+    '"=:" ends a flow, so nothing can follow it; put the other destination on its own line',
+  ],
   [/->\s*[A-Za-z_&][A-Za-z0-9_&]*[ \t]+\[/, 'a port name must touch its bracket: param1[X], not param1 [X]'],
   [/\][ \t]+[A-Za-z_&][A-Za-z0-9_&]*\s*$/, 'a named output must touch its bracket: [X]low, not [X] low'],
   [/\][ \t]+[A-Za-z_&][A-Za-z0-9_&]*\s*->/, 'a named output must touch its bracket: [X]low, not [X] low'],
@@ -283,17 +333,33 @@ function isBlankOrComment(line: string): boolean {
   return /^\s*$/.test(line) || /^\s*\/\//.test(line);
 }
 
+/** What's left of a line once its comment is taken off. */
+function codeOf(line: string): string {
+  const i = line.indexOf('//');
+  return i === -1 ? line : line.slice(0, i);
+}
+
+/**
+ * A hint about older syntax on or near a broken line. The search stays close
+ * to the error: a hint drawn from sixty lines away explains nothing, and
+ * error recovery can make one ERROR node cover most of a file.
+ */
+const HINT_REACH = 2;
+
 function hintFor(lines: string[], sr: number, er: number): string | undefined {
+  const last = Math.min(er, sr + HINT_REACH);
   const order = [sr];
-  for (let row = sr + 1; row <= er; row++) {
+  for (let row = sr + 1; row <= last; row++) {
     order.push(row);
   }
-  order.push(sr - 1, er + 1);
+  order.push(sr - 1, Math.min(er, last) + 1);
   for (const row of order) {
     const line = row >= 0 ? lines[row] : undefined;
     if (line !== undefined) {
+      // Comments are prose. "an item / has room" is not division.
+      const code = codeOf(line);
       for (const [re, hint] of HINTS) {
-        if (re.test(line)) {
+        if (re.test(code)) {
           return row === sr ? hint : `${hint} (line ${row + 1})`;
         }
       }
@@ -342,8 +408,29 @@ function collectSyntaxErrors(root: Node, lines: string[]): { diags: Diag[]; rows
     });
   };
 
+  /** Whether anything inside this node pins the problem down further. */
+  const hasInnerError = (node: Node): boolean => {
+    for (const child of node.children) {
+      if (child && (child.type === 'ERROR' || child.isMissing || (child.hasError && hasInnerError(child)))) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const visit = (node: Node) => {
     if (node.type === 'ERROR') {
+      // Error recovery can wrap most of a file in a single ERROR node, whose
+      // start is then the top of the file rather than anywhere useful. When
+      // it holds more specific errors, report those instead of it.
+      if (hasInnerError(node)) {
+        for (const child of node.children) {
+          if (child) {
+            visit(child);
+          }
+        }
+        return;
+      }
       const text = snippet(node);
       record(node, text !== '' ? `syntax error near "${text}"` : 'syntax error');
       return;
@@ -393,7 +480,9 @@ function collectSyntaxErrors(root: Node, lines: string[]): { diags: Diag[]; rows
 
 function parseSignature(node: Node): Sig | undefined {
   const text = node.text;
-  const m = /^([\d*]+)\s*\[\s*(.*?)\s*\]\s*([\d*]+)\s*([=~])>\s*(.*?)\s*:$/s.exec(text);
+  // The return type is optional: with output ports declared below, the ports
+  // give the types and the header only counts connection points.
+  const m = /^([\d*]+)\s*\[\s*(.*?)\s*\]\s*([\d*]+)\s*(?:([=~])>\s*(.*?)\s*)?:$/s.exec(text);
   if (!m) {
     return undefined;
   }
@@ -416,7 +505,8 @@ function parseSignature(node: Node): Sig | undefined {
     outputs,
     outMin,
     outMax,
-    ret: m[5],
+    ret: m[5] ?? '',
+    retArrow: m[4] === undefined ? undefined : m[4] === '~' ? '~>' : '=>',
     declText: text,
     inPorts: [],
     outPorts: [],
@@ -430,9 +520,16 @@ function parseSignature(node: Node): Sig | undefined {
 interface Component {
   decl?: Node;
   nodes: Node[];
+  /** whether a ";" at the top level closed it */
+  closed?: boolean;
 }
 
-/** A component runs from its declaration line to the next declaration. */
+/**
+ * A component runs from its declaration line to the next declaration, or to
+ * a ";" that closes it. Closing it explicitly changes nothing when the next
+ * thing is another component; it matters when what follows belongs to the
+ * file rather than to the component.
+ */
 function splitComponents(root: Node): Component[] {
   const prelude: Component = { nodes: [] };
   const comps: Component[] = [prelude];
@@ -444,6 +541,9 @@ function splitComponents(root: Node): Component[] {
     if (child.type === 'function_declaration') {
       current = { decl: child, nodes: [] };
       comps.push(current);
+    } else if (child.type === 'block_end') {
+      current.closed = true;
+      current = prelude;
     } else if (child.type !== 'import_statement' && child.type !== 'comment') {
       current.nodes.push(child);
     }
@@ -469,30 +569,74 @@ function readPorts(nodes: Node[], types: TypeEnv): [Port[], Port[]] {
     }
     const ty = first(holder, 'type');
     const tytext = ty ? ty.text : undefined;
-    let pending: Node | undefined;
-    for (const child of kids(holder)) {
-      if (child.type === 'pin_range') {
-        pending = child;
-      } else if (child.type === 'identifier') {
-        const end = pending ? field(pending, 'end') : undefined;
-        const unwired = field(holder, 'unwired');
-        list.push({
-          name: child.text,
-          idNode: child,
-          pinsNode: pending,
-          type: tytext,
-          variadic: types.isVariadic(tytext),
-          emits: n.type === 'emission_parameter',
-          open: !!end && end.type === 'open_end',
-          optional: !!unwired,
-          unwiredNode: unwired,
-          defRange: rangeOf(child),
-        });
-        pending = undefined;
+    const hear = first(holder, 'hearing_range');
+    const unwired = field(holder, 'unwired');
+    // Where the pin number sits says which way the port faces: before the
+    // bracket for an input, after it for an output. Both are read here, and
+    // checkPinSides holds them to the arrow.
+    const lead = field(holder, 'lead');
+    const trail = field(holder, 'trail');
+    const make = (child: Node, pins: Node | undefined, trailing: boolean): Port => {
+      const end = pins ? field(pins, 'end') : undefined;
+      return {
+        name: child.text,
+        idNode: child,
+        pinsNode: pins,
+        pinsTrailing: trailing,
+        type: tytext,
+        medium: types.mediumOf(tytext),
+        payload: types.payloadOf(tytext),
+        kind: types.kindOf(tytext),
+        hearNode: hear,
+        hearText: hear ? (field(hear, 'distance')?.text ?? undefined) : undefined,
+        typeInside: ty ? typeIsBracketed(holder, ty) : false,
+        variadic: types.isVariadic(tytext),
+        emits: n.type === 'emission_parameter',
+        open: !!end && end.type === 'open_end',
+        optional: !!unwired,
+        unwiredNode: unwired,
+        defRange: rangeOf(child),
+      };
+    };
+    if (n.type === 'timing_parameter') {
+      // SYNC(a, b: type) names several ports that share one type, so the
+      // pins ride along with each name.
+      let pending: Node | undefined;
+      for (const child of kids(holder)) {
+        if (child.type === 'pin_range') {
+          pending = child;
+        } else if (child.type === 'identifier') {
+          list.push(make(child, pending, false));
+          pending = undefined;
+        }
+      }
+    } else {
+      const id = first(holder, 'identifier');
+      if (id) {
+        list.push(make(id, lead ?? trail, !lead && !!trail));
+        if (lead && trail) {
+          list[list.length - 1].extraPinsNode = trail;
+        }
       }
     }
   }
   return [inputs, outputs];
+}
+
+/**
+ * Whether the type sits inside the port's brackets, `0[power: bit]`, rather
+ * than outside them in the older spelling, `0[power]: bit`. Only the newer
+ * form carries direction in the number's side, so only it is held to it.
+ */
+function typeIsBracketed(holder: Node, ty: Node): boolean {
+  for (const child of holder.children) {
+    // The bracket usually sits flush against the type, so its start index
+    // equals the type's end index.
+    if (child && !child.isNamed && child.type === ']' && child.startIndex >= ty.endIndex) {
+      return true;
+    }
+  }
+  return false;
 }
 
 type Report = (node: Node, msg: string, severity?: Severity) => void;
@@ -815,6 +959,105 @@ function checkVariadic(
   return undefined;
 }
 
+/**
+ * The arrow on a port line repeats what its type already says, and a hearing
+ * range only makes sense where something listens. Both are redundancy worth
+ * keeping: a port line should say on its own how its value travels. This is
+ * where the two are held to each other.
+ */
+/**
+ * A component's header puts what goes in on the left and what comes out on
+ * the right, and a port line says the same thing the same way: the pin number
+ * sits before the bracket going in, after it coming out. The arrow says it
+ * too, so the two are held to each other here.
+ *
+ * Only the newer spelling, with the type inside the brackets, carries
+ * direction this way. `=> 0..3[low]: nibble` is left alone.
+ */
+function checkPinSides(inputs: Port[], outputs: Port[], report: Report): void {
+  for (const port of [...inputs, ...outputs]) {
+    const at = port.pinsNode;
+    if (!at || !port.typeInside) {
+      continue;
+    }
+    const isInput = inputs.includes(port);
+    if (port.extraPinsNode) {
+      report(
+        port.extraPinsNode,
+        `"${port.name}" gives its pins on both sides; the number goes on one side, and which side it is says whether the port takes a value or gives one`,
+      );
+    } else if (isInput && port.pinsTrailing) {
+      report(
+        at,
+        `"${port.name}" takes a value, so its pins go before the bracket: -> ${at.text}[${port.name}: ${port.type ?? 'bit'}]`,
+      );
+    } else if (!isInput && !port.pinsTrailing) {
+      report(
+        at,
+        `"${port.name}" gives a value, so its pins go after the bracket: ${port.emits ? '~>' : '=>'} [${port.name}: ${port.type ?? 'bit'}]${at.text}`,
+      );
+    }
+  }
+}
+
+function checkPortMedia(inputs: Port[], outputs: Port[], types: TypeEnv, report: Report, decl?: Node): void {
+  for (const port of [...inputs, ...outputs]) {
+    // A component with no output ports still has one output, the one its
+    // header names, so the header line stands in for its port line here.
+    const at = port.idNode ?? (port.implicit ? decl : undefined);
+    if (!at) {
+      continue;
+    }
+    const label = port.name ? `"${port.name}"` : 'the output this header names';
+    const medium = port.medium;
+    if (port.emits && medium !== 'vibration') {
+      report(
+        at,
+        medium === undefined
+          ? `${label} leaves with ~>, which sends into the air, but its type is a ${port.type}, which travels on a wire; write ${isMedium(port.payload) ? 'strength' : (port.payload ?? port.type)}{vibration}, or send it out with =>`
+          : `${label} leaves with ~>, which sends into the air, but its type travels by ${medium}; send it out with =>`,
+      );
+    } else if (!port.emits && outputs.includes(port) && medium === 'vibration') {
+      report(
+        at,
+        `${label} is a ${port.type}, which goes into the air, so it leaves with ~>, not =>`,
+      );
+    }
+    // A record carried on a medium can't name a field the medium already
+    // fills in, because both are read the same way: vib.dist.
+    const delivery = types.deliveryOf(port.type);
+    if (medium !== undefined) {
+      const payload = port.payload;
+      const def = payload !== undefined ? (types.defs.get(payload) ?? payload) : undefined;
+      for (const f of types.recordFields(def) ?? []) {
+        if (f.name in delivery) {
+          report(
+            at,
+            `${label} travels by ${medium}, which fills in "${f.name}" on arrival, but ${payload} has a field of that name too; rename one of them`,
+          );
+        }
+      }
+    }
+    if (port.hearNode) {
+      if (outputs.includes(port)) {
+        report(port.hearNode, `~: says how far ${label} can hear, and only an input listens`);
+      } else if (!types.measuresDistance(port.type)) {
+        report(
+          port.hearNode,
+          medium === undefined
+            ? `~: says how far ${label} can hear, but a ${port.type} arrives on a wire, where distance doesn't come into it`
+            : `~: says how far ${label} can hear, but ${medium} doesn't measure how far anything came`,
+        );
+      } else {
+        const d = field(port.hearNode, 'distance');
+        if (d && d.type === 'number' && Number(d.text) < 1) {
+          report(d, 'a hearing range of 0 hears nothing; give the number of blocks this port reaches');
+        }
+      }
+    }
+  }
+}
+
 function attachPorts(sig: Sig, nodes: Node[], types: TypeEnv, report: Report, decl?: Node): [Layout, Layout] {
   let [inputs, outputs] = readPorts(nodes, types);
   const nIn = typeof sig.inputs === 'number' ? sig.inputs : undefined;
@@ -830,6 +1073,9 @@ function attachPorts(sig: Sig, nodes: Node[], types: TypeEnv, report: Report, de
         name: '',
         implicit: true,
         type: sig.ret,
+        medium: types.mediumOf(sig.ret),
+        payload: types.payloadOf(sig.ret),
+        kind: types.kindOf(sig.ret),
         s: 0,
         e: nOut - 1,
         variadic: false,
@@ -852,6 +1098,8 @@ function attachPorts(sig: Sig, nodes: Node[], types: TypeEnv, report: Report, de
       );
     }
   }
+  checkPinSides(inputs, outputs, report);
+  checkPortMedia(inputs, outputs, types, report, decl);
   [sig.settings, sig.settingOrder] = readSettings(nodes, report);
   for (const name of sig.settingOrder) {
     const def = sig.settings.get(name)!;
@@ -865,7 +1113,346 @@ function attachPorts(sig: Sig, nodes: Node[], types: TypeEnv, report: Report, de
   sig.varIn = checkVariadic(inputs, sig.inputs, sig.inMin, sig.inMax, sig, 'input', decl, report);
   sig.varOut = checkVariadic(outputs, sig.outputs, sig.outMin, sig.outMax, sig, 'output', decl, report);
   sig.declaredOutputs = outputs.filter((p) => !p.implicit).length;
+  sig.timing = computeTiming(sig, nodes);
   return [inLayout, outLayout];
+}
+
+// ---------------------------------------------------------------------------
+// Timing
+//
+// How long a component takes is not one number. It is a fact about a path
+// through it, from the event that starts the clock to the output that
+// changes. Every timed thing in Tikker lives inside an event block, so the
+// launch is always named: a WAIT's trigger, a CHANGE's trigger, a HEAR's
+// source. What follows is the sum of the AFTER blocks it sits under and the
+// delay arrows it crosses.
+//
+// Statements outside an event block are continuous: they are true at every
+// tick rather than happening at one, so they carry a change onward without
+// adding to it. That is what connects a state written inside an event to the
+// output derived from it below.
+// ---------------------------------------------------------------------------
+
+/** A span of time, as far as it is known: ticks plus anything only named. */
+export interface Delay {
+  /** game ticks from literal times */
+  ticks: number;
+  /** durations with only a name until the part is built, like `delay` */
+  symbols: string[];
+}
+
+export interface TimingPath {
+  /** the event that starts the clock */
+  from: string;
+  /** the output it reaches; "=>" for the one an undeclared output yields */
+  to: string;
+  delays: Delay[];
+}
+
+const zeroDelay = (): Delay => ({ ticks: 0, symbols: [] });
+
+function addDelays(a: Delay, b: Delay): Delay {
+  return { ticks: a.ticks + b.ticks, symbols: [...a.symbols, ...b.symbols] };
+}
+
+function delayKey(d: Delay): string {
+  return `${d.ticks}|${[...d.symbols].sort().join('+')}`;
+}
+
+/** One delay, written out: "1rt", "delay", "floor{vib.dist}gt + 10gt". */
+export function showDelay(d: Delay): string {
+  if (d.symbols.length === 0) {
+    return d.ticks === 0 ? 'same tick' : showTime(d.ticks);
+  }
+  const counts = new Map<string, number>();
+  for (const sym of d.symbols) {
+    counts.set(sym, (counts.get(sym) ?? 0) + 1);
+  }
+  const parts = [...counts].map(([sym, n]) => (n === 1 ? sym : `${n} × ${sym}`));
+  if (d.ticks !== 0) {
+    parts.push(showTime(d.ticks));
+  }
+  return parts.join(' + ');
+}
+
+/** Several delays to one place: a range when they are all numbers. */
+export function showDelays(ds: Delay[]): string {
+  if (ds.length === 0) {
+    return '';
+  }
+  const seen = new Map<string, Delay>();
+  for (const d of ds) {
+    if (!seen.has(delayKey(d))) {
+      seen.set(delayKey(d), d);
+    }
+  }
+  const uniq = [...seen.values()];
+  if (uniq.length === 1) {
+    return showDelay(uniq[0]);
+  }
+  if (uniq.every((d) => d.symbols.length === 0)) {
+    const ns = uniq.map((d) => d.ticks);
+    return `${showDelay({ ticks: Math.min(...ns), symbols: [] })} .. ${showDelay({ ticks: Math.max(...ns), symbols: [] })}`;
+  }
+  const texts = uniq.map(showDelay);
+  return texts.length > 3 ? `${texts.slice(0, 3).join(', ')}, …` : texts.join(', ');
+}
+
+const EVENT_TYPES = new Set(['event_block', 'change_block', 'hear_block']);
+
+/** The time a duration stands for, or its name when that is all there is. */
+function durationOf(node: Node | undefined): Delay {
+  if (!node) {
+    return zeroDelay();
+  }
+  if (node.type === 'time') {
+    const gt = parseTime(node.text);
+    return gt === undefined ? { ticks: 0, symbols: [node.text] } : { ticks: gt, symbols: [] };
+  }
+  return { ticks: 0, symbols: [norm(node.text)] };
+}
+
+/** Every identifier read inside a node, for working out what feeds what. */
+function namesIn(node: Node): string[] {
+  const out: string[] = [];
+  walk(node, (x) => {
+    if (x.type === 'identifier') {
+      out.push(x.text);
+    }
+  });
+  return out;
+}
+
+function computeTiming(sig: Sig, nodes: Node[]): TimingPath[] {
+  const events: { from: string; body?: Node }[] = [];
+  const continuous: Node[] = [];
+  for (const n of nodes) {
+    if (EVENT_TYPES.has(n.type)) {
+      const trigger = field(n, 'trigger') ?? field(n, 'source');
+      const body = first(n, 'block');
+      if (trigger && body) {
+        events.push({ from: trigger.text, body });
+      }
+    } else {
+      continuous.push(n);
+    }
+  }
+  // A component with no event block still has paths through it: its inputs
+  // changing is what starts the clock. A port that already triggers an event
+  // is left to that event rather than counted twice.
+  const triggered = new Set(events.map((e) => e.from));
+  for (const port of sig.inPorts) {
+    if (port.name && !triggered.has(port.name)) {
+      events.push({ from: port.name, body: undefined });
+    }
+  }
+  if (events.length === 0) {
+    return [];
+  }
+
+  // What a continuous statement passes along, and to where. These add no
+  // time; they say that when this changes, that changes with it.
+  const edges: { from: string[]; to: string[]; delay: Delay }[] = [];
+  /** One statement's worth of "when this changes, that changes with it". */
+  const addEdge = (extraFrom: string[], stmt: Node) => {
+    const from = [...extraFrom];
+    const to: string[] = [];
+    let delay = zeroDelay();
+    for (const child of stmt.children) {
+      if (!child) {
+        continue;
+      }
+      const t = child.type;
+      if (t === 'flow_source' || t === 'pattern_result') {
+        from.push(...namesIn(child));
+      } else if (t === 'flow_destination') {
+        const id = first(child);
+        if (id && id.type === 'identifier') {
+          to.push(id.text);
+        }
+      } else if (t === 'state_write') {
+        const id = first(child, 'identifier');
+        if (id) {
+          to.push(id.text);
+        }
+      } else if (t === 'delay') {
+        delay = addDelays(delay, durationOf(field(child, 'time')));
+      } else if (t === 'vibration_link') {
+        const dist = field(child, 'distance');
+        delay = addDelays(delay, { ticks: 0, symbols: [`${dist ? norm(dist.text) : '?'} blocks`] });
+      } else if (!child.isNamed && (t === '=>' || t === '~>')) {
+        to.push('=>');
+      }
+    }
+    if (from.length > 0 && to.length > 0) {
+      edges.push({ from, to, delay });
+    }
+  };
+
+  const collectContinuous = (stmt: Node) => {
+    if (stmt.type === 'each_block') {
+      const b = first(stmt, 'block');
+      for (const s2 of b ? kids(b) : []) {
+        collectContinuous(s2);
+      }
+      return;
+    }
+    if (stmt.type === 'pattern_match') {
+      // Arms are alternatives, not steps: each one is its own path, with its
+      // own delay. Adding them together would say a comparator takes as long
+      // as all of its cases put together.
+      const subject = field(stmt, 'subject');
+      const base = subject ? namesIn(subject) : [];
+      for (const kase of kids(stmt, 'pattern_case')) {
+        const body = first(kase, 'block');
+        if (body) {
+          for (const s2 of kids(body)) {
+            collectContinuous(s2);
+          }
+        } else {
+          addEdge(base, kase);
+        }
+      }
+      return;
+    }
+    if (stmt.type === 'flow') {
+      addEdge([], stmt);
+    }
+  };
+
+  for (const n of continuous) {
+    collectContinuous(n);
+  }
+
+  const targets = new Set<string>(sig.outPorts.filter((p) => !p.implicit && p.name).map((p) => p.name));
+  if (targets.size === 0) {
+    targets.add('=>');
+  }
+
+  const paths: TimingPath[] = [];
+  for (const ev of events) {
+    const reach = new Map<string, Delay[]>();
+    const record = (name: string, d: Delay) => {
+      const list = reach.get(name) ?? [];
+      if (!list.some((x) => delayKey(x) === delayKey(d))) {
+        list.push(d);
+      }
+      reach.set(name, list);
+    };
+
+    // A flow or a pattern arm: delay arrows add time, destinations and state
+    // writes are where it lands.
+    const chain = (stmt: Node, acc: Delay) => {
+      let d = acc;
+      for (const child of stmt.children) {
+        if (!child) {
+          continue;
+        }
+        const t = child.type;
+        if (t === 'delay') {
+          d = addDelays(d, durationOf(field(child, 'time')));
+        } else if (t === 'vibration_link') {
+          // A vibration takes about a tick a block, and the distance is a
+          // placement fact, so it stays a name.
+          const dist = field(child, 'distance');
+          d = addDelays(d, { ticks: 0, symbols: [`${dist ? norm(dist.text) : '?'} blocks`] });
+        } else if (t === 'flow_destination') {
+          const id = first(child);
+          if (id && id.type === 'identifier') {
+            record(id.text, d);
+          }
+        } else if (t === 'state_write') {
+          const id = first(child, 'identifier');
+          if (id) {
+            record(id.text, d);
+          }
+        } else if (t === 'block') {
+          visit(child, d);
+        } else if (!child.isNamed && (t === '=>' || t === '~>')) {
+          record('=>', d);
+        }
+      }
+    };
+
+    const step = (stmt: Node, acc: Delay) => {
+      const t = stmt.type;
+      if (t === 'after_block') {
+        const body = first(stmt, 'block');
+        if (body) {
+          visit(body, addDelays(acc, durationOf(field(stmt, 'delay'))));
+        }
+      } else if (t === 'sequence_block') {
+        const per = durationOf(field(stmt, 'delay'));
+        const body = first(stmt, 'block');
+        let d = acc;
+        for (const s of body ? kids(body) : []) {
+          d = addDelays(d, per);
+          step(s, d);
+        }
+      } else if (t === 'each_block') {
+        const body = first(stmt, 'block');
+        if (body) {
+          visit(body, acc);
+        }
+      } else if (t === 'pattern_match') {
+        for (const kase of kids(stmt, 'pattern_case')) {
+          chain(kase, acc);
+        }
+      } else if (t === 'flow') {
+        chain(stmt, acc);
+      } else if (EVENT_TYPES.has(t)) {
+        // A nested event starts its own clock; it isn't on this path.
+      }
+    };
+
+    const visit = (body: Node, acc: Delay) => {
+      for (const stmt of kids(body)) {
+        step(stmt, acc);
+      }
+    };
+
+    // The trigger has changed by definition, at no delay, so whatever is
+    // derived from it continuously changes in the same tick.
+    record(ev.from, zeroDelay());
+    if (ev.body) {
+      visit(ev.body, zeroDelay());
+    }
+
+    // Carry what changed onward through the continuous statements, which add
+    // no time. A few passes settle it; a loop just stops adding.
+    for (let pass = 0; pass < 8; pass++) {
+      let changed = false;
+      for (const edge of edges) {
+        for (const src of edge.from) {
+          for (const d of reach.get(src) ?? []) {
+            for (const dst of edge.to) {
+              // A loop would keep making new sums; a handful of distinct
+              // answers is all that is worth showing anyway.
+              if ((reach.get(dst)?.length ?? 0) >= 4) {
+                continue;
+              }
+              const before = reach.get(dst)?.length ?? 0;
+              record(dst, addDelays(d, edge.delay));
+              if ((reach.get(dst)?.length ?? 0) !== before) {
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+      if (!changed) {
+        break;
+      }
+    }
+
+    for (const target of targets) {
+      const ds = reach.get(target);
+      if (ds && ds.length > 0) {
+        paths.push({ from: ev.from, to: target, delays: ds });
+      }
+    }
+  }
+  return paths;
 }
 
 function findPort(ports: Port[] | undefined, name: string): Port | undefined {
@@ -912,6 +1499,7 @@ export function readDecls(text: string, path: string): Decls {
         port.idNode = undefined;
         port.pinsNode = undefined;
         port.unwiredNode = undefined;
+        port.hearNode = undefined;
       }
     }
     for (const def of sig.settings.values()) {
@@ -975,6 +1563,22 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       types.defs.set(n.text, d.text);
       types.origins.set(n.text, { path, range: rangeOf(n) });
       mark(n, 'type');
+    }
+  }
+
+  // A ";" at the top level closes the component above it, so there has to be
+  // one open.
+  {
+    let open = false;
+    for (const child of kids(root)) {
+      if (child.type === 'function_declaration') {
+        open = true;
+      } else if (child.type === 'block_end') {
+        if (!open) {
+          add(child, '";" closes the component above it, and no component is open here');
+        }
+        open = false;
+      }
     }
   }
 
@@ -1046,7 +1650,13 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
     }
     const id = first(x, 'identifier');
     if (id && !types.defs.has(id.text)) {
-      add(id, `unknown type "${id.text}"; declare it with TYPE or import it with USE`, config.unknownComponentSeverity);
+      add(
+        id,
+        isMedium(id.text)
+          ? `"${id.text}" is a medium, not a type; it says how a value travels, so write what travels and put it in braces: strength{${id.text}}`
+          : `unknown type "${id.text}"; declare it with TYPE or import it with USE`,
+        config.unknownComponentSeverity,
+      );
     } else if (id) {
       mark(id, 'type');
     }
@@ -1062,6 +1672,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
   interface Scope {
     decl?: Node;
     nodes: Node[];
+    closed?: boolean;
     sig?: Sig;
     values: Map<string, Value>;
     instances: Map<string, Instance>;
@@ -1069,6 +1680,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
   const scopes: Scope[] = splitComponents(root).map((c) => ({
     decl: c.decl,
     nodes: c.nodes,
+    closed: c.closed,
     values: new Map(),
     instances: new Map(),
   }));
@@ -1117,6 +1729,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
 
     // 5[Pole]5 ~> transmission{vibration}: outputs written as parts of that
     // record must cover each field once, carried the same way.
+    let splitsRecord = false;
     const rm = /^([A-Za-z_&][A-Za-z0-9_&]*)(.*)$/s.exec(sig.ret ?? '');
     const rname = rm?.[1];
     const rarg = rm?.[2] ?? '';
@@ -1152,14 +1765,83 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           }
         }
       }
+      splitsRecord = any;
+    }
+
+    // The header's return type is the type of the one output a component has
+    // when it declares none. With output ports below, the ports give the
+    // types, more exactly than one name in the header can, so the header
+    // repeats them and only counts connection points.
+    // The exception is a component whose outputs are the parts of one record:
+    // there the header says something the ports can't say one at a time,
+    // which is that together they make a transmission.
+    if (scope.decl) {
+      const declaredOut = sig.outPorts.filter((p) => !p.implicit);
+      if (sig.retArrow && declaredOut.length > 0 && !splitsRecord) {
+        add(
+          scope.decl,
+          `${sig.name} declares ${declaredOut.length === 1 ? 'an output port' : `${declaredOut.length} output ports`} (${declaredOut
+            .map((p) => p.name)
+            .join(', ')}), which give the types; drop the "${sig.retArrow} ${sig.ret}" from the header`,
+        );
+      } else if (!sig.retArrow && declaredOut.length === 0 && sig.outputs !== 0) {
+        add(
+          scope.decl,
+          `${sig.name} has no output ports, so the header says what it yields; add a return type like "=> bit", or declare its outputs below`,
+        );
+      }
     }
     if (sig.declaredOutputs > 0) {
       unusedPinsWarning(scope, outLayout, 'output');
     }
   }
 
+  /**
+   * ";" is optional: indentation says where a block ends, and the closer
+   * says it out loud. What isn't fine is doing both within one component,
+   * because then a missing one looks like a block that ended somewhere it
+   * didn't. So closers are all-or-nothing per component.
+   */
+  const checkClosers = (scope: Scope) => {
+    const blocks: Node[] = [];
+    for (const n of scope.nodes) {
+      walk(n, (x) => {
+        if (x.type === 'block' || x.type === 'pattern_match') {
+          blocks.push(x);
+        }
+      });
+    }
+    const closed = blocks.filter((b) => !!first(b, 'block_end'));
+    if (closed.length === 0 || closed.length === blocks.length) {
+      if (closed.length === 0 || !scope.decl || scope.closed) {
+        return;
+      }
+      add(
+        scope.decl,
+        `${scope.sig?.name ?? 'this component'} closes its blocks with ";", so close the component too: a ";" of its own on the last line`,
+        config.unclosedBlockSeverity,
+      );
+      return;
+    }
+    for (const b of blocks) {
+      if (first(b, 'block_end')) {
+        continue;
+      }
+      const end = rangeOf(b).end;
+      diags.push({
+        range: { start: end, end },
+        message:
+          b.type === 'pattern_match'
+            ? 'this pattern has no ";", and the others in this component do; a closer that is there sometimes hides the one that is missing'
+            : 'this block has no ";", and the others in this component do; a closer that is there sometimes hides the one that is missing',
+        severity: config.unclosedBlockSeverity,
+      });
+    }
+  };
+
   // Per-scope checks.
   for (const scope of scopes) {
+    checkClosers(scope);
     checkScope(scope);
   }
 
@@ -1184,7 +1866,13 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         add(idNode, `"${name}" is already declared in this component`, WARN);
       }
       if (!existing || existing.kind === 'wire') {
-        const v: Value = { kind, type: typeText, defRange: existing?.defRange ?? rangeOf(idNode) };
+        const v: Value = {
+          kind,
+          type: typeText,
+          read: existing?.read,
+          defNode: existing?.defNode ?? idNode,
+          defRange: existing?.defRange ?? rangeOf(idNode),
+        };
         values.set(name, v);
         return v;
       }
@@ -1318,6 +2006,43 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       } else if (sig) {
         mark(typeNode);
       }
+
+      // Each name in the brackets becomes a part of this component. A name
+      // with indices, [lamp{0..7, 0..3}], is an array, and its ranges are the
+      // shape every later lamp{...} is checked against.
+      const listNode = field(node, 'instances');
+      for (const content of listNode ? kids(listNode) : []) {
+        const inner = first(content);
+        if (!inner) {
+          continue;
+        }
+        if (inner.type === 'instance_ref') {
+          const dims: [number, number][] = [];
+          let bad = false;
+          for (const ix of kids(inner, 'index')) {
+            const v = num(field(ix, 'value'));
+            const [a, b] = rangeNums(ix);
+            if (v !== undefined) {
+              dims.push([v, v]);
+            } else if (a !== undefined && b !== undefined) {
+              dims.push([Math.min(a, b), Math.max(a, b)]);
+            } else {
+              // An open end or a variable: it has no size, so the array has
+              // no shape to check indices against.
+              bad = true;
+            }
+          }
+          registerInstance(field(inner, 'name'), bad ? undefined : dims, sig, typeName, bad);
+          if (bad) {
+            add(inner, `"${field(inner, 'name')?.text ?? ''}" is being declared, so its indices need a definite size, like [${field(inner, 'name')?.text ?? 'part'}{0..7}]`);
+          }
+        } else if (inner.type === 'identifier') {
+          registerInstance(inner, undefined, sig, typeName);
+        } else {
+          registerInstance(first(inner, 'identifier'), undefined, sig, typeName);
+        }
+      }
+
       const chosenNode = field(node, 'settings');
       if (sig && typeName && typeNode) {
         const chosen = new Set<string>();
@@ -1474,10 +2199,12 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           }
           return false;
         } else if (t === 'state_declaration') {
-          const ty = first(x, 'type');
-          const id = first(x, 'identifier');
-          declare(id, 'state', ty ? ty.text : undefined);
-          const en = ty ? first(ty, 'enum_type') : undefined;
+          // STATE takes the same shapes SETTING does: a range, a time range,
+          // or a list of names.
+          const allowed = field(x, 'allowed');
+          const id = field(x, 'name');
+          declare(id, 'state', allowed ? norm(allowed.text) : undefined);
+          const en = allowed && allowed.type === 'setting_options' ? allowed : undefined;
           if (en && id) {
             const def: EnumDef = { name: id.text, options: [], optionSet: new Set() };
             for (const o of kids(en, 'identifier')) {
@@ -1519,7 +2246,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       });
     }
 
-    const maxFor = (typeName: string | false | undefined) => (typeName ? LEVELS[typeName] : undefined);
+    const maxFor = (typeName: string | false | undefined) => types.level(typeName);
 
     const refNameNode = (ref: Node) => (ref.type === 'instance_ref' ? field(ref, 'name') : ref);
 
@@ -1780,10 +2507,17 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       return result;
     };
 
-    const checkValue = (id: Node, ctx: 'flow' | 'subject' | 'operand' | 'trigger') => {
+    const checkValue = (id: Node, ctx: 'flow' | 'subject' | 'operand' | 'trigger' | 'hear') => {
       const name = id.text;
       const v = values.get(name);
       if (v) {
+        v.read = true;
+        if (ctx === 'trigger' && types.kindOf(v.type) === 'event') {
+          add(
+            id,
+            `WAIT and CHANGE watch a level, but "${name}" is a ${v.type}: it exists only in the tick it arrives; read it with HEAR(vib IN ${name})`,
+          );
+        }
         if (v.kind === 'setting') {
           const ok = ctx === 'subject' || (ctx === 'operand' && v.type === 'number');
           if (!ok) {
@@ -2007,6 +2741,151 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
 
     // How many pins a flow element puts onto the next one; undefined for things
     // that aren't signals (a constant like `0 ->` initializes, it doesn't drive).
+    /**
+     * The type a flow element carries, when one name answers for it. Used to
+     * hold the two ends of a link to the same medium: a value that travels
+     * through the air can't arrive on a wire, and a contact interface only
+     * meets the same contact interface.
+     */
+    const sourceType = (el: Node): string | undefined => {
+      const t = el.type;
+      if (t === 'identifier') {
+        return values.get(el.text)?.type;
+      }
+      if (t === 'field_access') {
+        return undefined; // a part of a value, not the value
+      }
+      let refs: Node[] = [];
+      let portNode: Node | undefined;
+      if (t === 'output_ref') {
+        portNode = portNodeOf(el);
+        const arr = first(el, 'component_array');
+        refs = arr ? bracketIds(arr) : [];
+      } else if (t === 'parameter_ref') {
+        portNode = portNodeOf(el);
+        refs = refItems(el);
+      } else if (t === 'component_array') {
+        refs = bracketIds(el);
+      } else {
+        return undefined;
+      }
+      if (refs.length !== 1) {
+        return undefined;
+      }
+      const r = resolveRef(refs[0], false);
+      if (r && r.kind === 'value') {
+        return r.value.type;
+      }
+      if (!(r && r.kind === 'part' && r.sig)) {
+        return undefined;
+      }
+      if (portNode) {
+        return findPort(r.sig.outPorts, portNode.text)?.type;
+      }
+      const declared = r.sig.outPorts.filter((p) => !p.implicit);
+      return declared.length === 1 ? declared[0].type : r.sig.ret || undefined;
+    };
+
+    /** The type a flow element receives, which for a part is its input port. */
+    const destType = (el: Node): string | undefined => {
+      if (el.type === 'identifier') {
+        return values.get(el.text)?.type;
+      }
+      if (el.type !== 'parameter_ref') {
+        return undefined;
+      }
+      const portNode = portNodeOf(el);
+      const refs = refItems(el);
+      if (!portNode || refs.length !== 1) {
+        return undefined;
+      }
+      const r = resolveRef(refs[0], false);
+      return r && r.kind === 'part' && r.sig ? findPort(r.sig.inPorts, portNode.text)?.type : undefined;
+    };
+
+    /**
+     * ~( )~> is a stretch of open air, so both ends have to be things that
+     * travel that way. A wire crossing it is a different claim about the
+     * world than the arrow makes.
+     */
+    const checkAirLink = (link: Node) => {
+      const ends: [Node | null, string, string][] = [
+        [link.previousNamedSibling, 'sends', 'emit'],
+        [link.nextNamedSibling, 'takes', 'hear'],
+      ];
+      for (const [el, verb, fix] of ends) {
+        const inner = el ? first(el) : undefined;
+        if (!el || !inner) {
+          continue;
+        }
+        const ty = verb === 'sends' ? sourceType(inner) : destType(inner);
+        if (ty !== undefined && types.mediumOf(ty) !== 'vibration') {
+          add(
+            el,
+            `~( )~> crosses open air, but this end ${verb} a ${ty}, which travels ${howItTravels(types.mediumOf(ty))}; ${fix} it as something{vibration}, or use -> instead`,
+          );
+        }
+      }
+    };
+
+    /** Whether this element reads from a part rather than from a local value. */
+    const namesAPart = (el: Node): boolean => {
+      let refs: Node[] = [];
+      if (el.type === 'output_ref') {
+        const arr = first(el, 'component_array');
+        refs = arr ? bracketIds(arr) : [];
+      } else if (el.type === 'parameter_ref') {
+        refs = refItems(el);
+      } else if (el.type === 'component_array') {
+        refs = bracketIds(el);
+      } else {
+        return false;
+      }
+      return refs.some((ref) => {
+        const r = resolveRef(ref, false);
+        return !!r && r.kind === 'part';
+      });
+    };
+
+    /** "on a wire", "through the air", "by contact" — how a value gets there. */
+    const howItTravels = (medium: string | undefined) =>
+      medium === undefined ? 'on a wire' : medium === 'vibration' ? 'through the air' : `by ${medium}`;
+
+    /**
+     * Two ends of one link have to agree on how the value travels, and on
+     * what it is when the medium carries an interface rather than a level.
+     * This is what makes a contact port mean "only the kind of neighbour that
+     * reads this can be wired here".
+     */
+    const checkLink = (at: Node, from: Node, toType: string | undefined, what: string, report: (n: Node, m: string) => void) => {
+      const fromType = sourceType(from);
+      if (fromType === undefined || toType === undefined) {
+        return;
+      }
+      const a = types.mediumOf(fromType);
+      const b = types.mediumOf(toType);
+      if (a !== b) {
+        report(
+          at,
+          `"${from.text.replace(/\s+/g, ' ')}" travels ${howItTravels(a)}, but ${what} arrives ${howItTravels(b)}; a link carries one or the other`,
+        );
+        return;
+      }
+      // Over contact the payload is the whole of what makes one adjacency
+      // different from another: a comparator reading a block and a hopper
+      // taking from it touch the same way and mean nothing alike. So there
+      // the two ends have to name the same interface. On a wire or through
+      // the air the medium already says enough, and a nibble arriving where
+      // a transmission.data is expected is the same nibble.
+      if (a === 'contact') {
+        const pa = norm(types.payloadOf(fromType) ?? '');
+        const pb = norm(types.payloadOf(toType) ?? '');
+        if (pa !== pb && pa !== '' && pb !== '') {
+          report(at, `"${from.text.replace(/\s+/g, ' ')}" offers ${pa} by contact, but ${what} takes ${pb}; touching blocks have to mean the same thing by it`);
+        }
+      }
+    };
+
     const sourceWidth = (el: Node): number | undefined => {
       const t = el.type;
       if (t === 'number') {
@@ -2074,6 +2953,22 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       }
       return source.text.replace(/\s+/g, ' ');
     };
+
+    /**
+     * Whether a pin is part of a port that hears rather than one that's
+     * wired. Redstone keeps the strongest of several sources on a wire, but
+     * the air doesn't work that way: a sensor takes the nearest arrival, and
+     * is deaf while it's busy. So two sources reaching the same ear is not
+     * the wired-OR that warning is about.
+     */
+    const hearsAt = (sig: Sig, from: number, to: number): boolean =>
+      sig.inPorts.some(
+        (p) =>
+          p.kind === 'event' &&
+          p.s !== undefined &&
+          from <= (p.e ?? p.s) &&
+          to >= p.s,
+      );
 
     const addDriver = (inst: string, from: number, to: number, key: string, node: Node) => {
       let pins = drivers.get(inst);
@@ -2182,6 +3077,13 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
                 `"${source.text.replace(/\s+/g, ' ')}" is ${width} pin${s(width)} wide, but output ${dest.text} is a ${out!.type} (${ow} pin${s(ow)})`,
               );
             }
+            // A medium says how a value gets from one part to another. What
+            // drives a component's own output from inside it has not
+            // travelled anywhere yet, so only a source that names a part is
+            // the far end of a link.
+            if (out && out.kind === 'output' && namesAPart(source)) {
+              checkLink(dest, source, out.type, `output "${dest.text}"`, report);
+            }
           } else if (width !== undefined && dest.type === 'parameter_ref') {
             const portNode = portNodeOf(dest);
             const key = sourceKey(source, assign);
@@ -2224,7 +3126,8 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
                       `"${label}" is ${width} pin${s(width)} wide, but ${port.name} of ${sig.name} is a ${port.type} (${pw} pin${s(pw)})`,
                     );
                   }
-                  if (port.s !== undefined && port.e !== undefined && names && key !== undefined) {
+                  checkLink(dest, source, port.type, `${port.name} of ${sig.name}`, report);
+                  if (port.s !== undefined && port.e !== undefined && names && key !== undefined && port.kind !== 'event') {
                     for (const nm of names) {
                       addDriver(nm, port.s, port.e, key, dest);
                     }
@@ -2240,7 +3143,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
                       `"${label}" is ${width} pins wide; starting at pin ${k} it needs pins ${k}..${k + width - 1}, but ${sig.name} has ${pinSpan(nPins)}`,
                     );
                   }
-                  if (key !== undefined) {
+                  if (key !== undefined && !hearsAt(sig, k, k + width - 1)) {
                     for (const nm of names ?? []) {
                       addDriver(nm, k, k + width - 1, key, dest);
                     }
@@ -2324,17 +3227,25 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         return;
       }
       const declared = sig.outPorts.filter((p) => !p.implicit);
-      const emits = (declared.length === 1 && declared[0].emits) || (declared.length === 0 && sig.emits);
+      // A trailing output arrow after a declared output is the programmer
+      // saying out loud that the value leaves here. It repeats what the
+      // output port already says, so it's optional and never ambiguous.
+      const namedOut = (y: { value?: Node }): Port | undefined =>
+        y.value && y.value.type === 'identifier' ? findPort(declared, y.value.text) : undefined;
+      const bare = yields.filter((y) => !namedOut(y));
       for (const y of yields) {
-        if (declared.length < 2 && emits && y.arrow === '=>') {
-          add(y.node, `${sig.name} emits into the air, so its output leaves with ~>, not =>`);
-        } else if (declared.length < 2 && !emits && y.arrow === '~>') {
-          add(y.node, `${sig.name} drives a wire, so its output leaves with =>; ~> is for vibrations sent into the air`);
+        const port = namedOut(y);
+        const goesToAir = port ? port.medium === 'vibration' : (declared.length === 1 ? declared[0].medium === 'vibration' : sig.emits);
+        const what = port ? `${sig.name}'s "${port.name}"` : sig.name;
+        if ((port || declared.length < 2) && goesToAir && y.arrow === '=>') {
+          add(y.node, `${what} goes into the air, so it leaves with ~>, not =>`);
+        } else if ((port || declared.length < 2) && !goesToAir && y.arrow === '~>') {
+          add(y.node, `${what} travels on a wire, so it leaves with =>; ~> is for what goes into the air`);
         }
       }
       if (declared.length >= 2) {
         const names = declared.map((p) => p.name);
-        for (const y of yields) {
+        for (const y of bare) {
           add(
             y.node,
             `${sig.name} has several outputs (${names.join(', ')}), so a bare "=>" is ambiguous; send to one by name, e.g. -> ${names[0]}`,
@@ -2344,7 +3255,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         const targetType = (declared.length === 1 ? declared[0].type : undefined) || sig.ret;
         const tw = types.width(targetType);
         for (const y of yields) {
-          const limit = targetType ? LEVELS[targetType] : undefined;
+          const limit = types.level(targetType);
           if (y.value && y.value.type === 'number' && limit !== undefined) {
             const n = num(y.value);
             if (n !== undefined && n > limit) {
@@ -2580,12 +3491,31 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
     const carriesSignal = (n: Node): boolean => {
         if (n.type === 'identifier') {
             const v = values.get(n.text);
-            return !!v && v.kind !== 'setting';
+            if (v) {
+                return v.kind !== 'setting';
+            }
+            // A HEAR's own value: what arrived, which is a level once it's here.
+            return !!hearBlockFor(n, n.text);
+        }
+        if (n.type === 'field_access') {
+            // A delivery fact is about the journey, not about a pin.
+            return !isDeliveryAccess(n);
         }
         if (n.type === 'operator_call') {
             return fields(n, 'arg').some(carriesSignal);
         }
         return false;
+    };
+
+    /** Whether `vib.dist` reads a fact the link filled in rather than a payload field. */
+    const isDeliveryAccess = (fa: Node): boolean => {
+        const obj = field(fa, 'object');
+        const fld = field(fa, 'field');
+        if (!obj || !fld) {
+            return false;
+        }
+        const ty = hearBlockFor(fa, obj.text) ? hearVarType(fa, obj.text) : values.get(obj.text)?.type;
+        return fld.text in types.deliveryOf(ty);
     };
 
     /** Whether numbers above 15 make sense inside this call. */
@@ -2600,8 +3530,14 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         if (op.wideUnlessSignal && args.some(carriesSignal)) {
             return false;
         }
-        // vib.dist is measured in blocks, so it is already beyond 0..15.
-        if (args.some((a) => a.type === 'field_access')) {
+        // A delivery fact like vib.dist is measured in blocks, so it is
+        // already beyond 0..15; a payload field is a level like any other.
+        // It carries outward too: div{mul{16, vib.dist}, 16} is still about
+        // blocks, however deep the dist sits.
+        if (args.some((a) => a.type === 'field_access' && isDeliveryAccess(a))) {
+            return true;
+        }
+        if (args.some((a) => a.type === 'operator_call' && callIsWide(a))) {
             return true;
         }
         return op.wideUnlessSignal || !op.wide;
@@ -2698,67 +3634,88 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
     };
 
     const checkStateDecl = (sd: Node) => {
-      const ty = first(sd, 'type');
-      const en = ty ? first(ty, 'enum_type') : undefined;
-      if (en) {
-        const ids = kids(sd, 'identifier');
-        const v = ids[0] ? values.get(ids[0].text) : undefined;
-        const def = v?.enumDef;
-        if (def) {
-          const opts = def.options.join(', ');
-          if (ids[1] && !def.optionSet.has(ids[1].text)) {
-            add(ids[1], `"${ids[1].text}" is not one of ${def.name}'s options: ${opts}`);
-          }
-          const n0 = first(sd, 'number');
-          if (n0) {
-            add(n0, `${def.name} holds one of ${opts}, not a number`);
-          }
+      const nameNode = field(sd, 'name');
+      const allowed = field(sd, 'allowed');
+      const dflt = field(sd, 'default');
+      if (!nameNode || !allowed) {
+        return;
+      }
+      const name = nameNode.text;
+      const def = values.get(name)?.enumDef;
+      if (def) {
+        const opts = def.options.join(', ');
+        if (dflt && dflt.type === 'identifier' && !def.optionSet.has(dflt.text)) {
+          add(dflt, `"${dflt.text}" is not one of ${name}'s options: ${opts}`);
+        } else if (dflt && dflt.type !== 'identifier') {
+          add(dflt, `${name} holds one of ${opts}, not ${dflt.type === 'number' ? 'a number' : 'a time'}`);
         }
         return;
       }
-      const tname = ty?.text;
-      const w = types.width(tname);
-      if (!tname || w === undefined) {
+      if (allowed.type === 'time_range') {
+        const a = parseTime(field(allowed, 'start')?.text ?? '');
+        const b = parseTime(field(allowed, 'end')?.text ?? '');
+        if (a !== undefined && b !== undefined && b < a) {
+          add(allowed, `${allowed.text} runs backwards; write it smallest first`);
+        }
+        if (dflt && dflt.type !== 'time' && dflt.type !== 'identifier') {
+          add(dflt, `"${name}" holds a time; give one like 2gt or 1rt`);
+        }
         return;
       }
-      const n0 = first(sd, 'number');
-      const limit = LEVELS[tname];
-      const n = num(n0);
-      if (n0 && limit !== undefined && n !== undefined && n > limit) {
-        add(n0, `${n} does not fit in a ${tname} (max ${limit})`);
+      const lo = num(field(allowed, 'start'));
+      const hi = num(field(allowed, 'end'));
+      if (lo !== undefined && hi !== undefined && hi < lo) {
+        add(allowed, `${allowed.text} runs backwards; write ${hi}..${lo}`);
+        return;
       }
-      const arr = first(sd, 'data_array');
-      if (arr) {
-        const count = kids(arr, 'data_item').length;
-        if (count !== w) {
-          add(arr, `a ${tname} has ${w} bit(s); this initializer has ${count}`);
-        }
+      const n = num(dflt);
+      if (dflt && n === undefined && dflt.type !== 'identifier') {
+        add(dflt, `"${name}" holds a number from ${allowed.text}; give one`);
+      } else if (n !== undefined && ((lo !== undefined && n < lo) || (hi !== undefined && n > hi))) {
+        add(dflt!, `${n} is outside ${name}, which holds ${allowed.text}`);
       }
+    };
+
+    /** The type a HEAR's variable stands for: what its source port carries. */
+    const hearVarType = (node: Node, name: string): string | undefined => {
+      const hb = hearBlockFor(node, name);
+      const source = hb ? field(hb, 'source') : undefined;
+      return source ? values.get(source.text)?.type : undefined;
     };
 
     const checkHear = (hb: Node) => {
       const source = field(hb, 'source');
       if (source) {
-        checkValue(source, 'trigger');
+        checkValue(source, 'hear');
         const v = values.get(source.text);
-        const ty = v?.type?.replace(/\s/g, '');
-        if (v && ty !== 'vibration' && ty !== '{vibration}') {
-          add(source, `HEAR listens for vibrations, but "${source.text}" is a ${v.type ?? 'plain value'}; declare it as -> ${source.text}: {vibration}`);
+        if (v && types.kindOf(v.type) === 'level') {
+          add(
+            source,
+            `HEAR reads arrivals, but "${source.text}" is a ${v.type ?? 'plain value'}, which persists; declare it on a medium that arrives, e.g. -> ${source.text}: strength{vibration}, or watch it with WAIT(${source.text})`,
+          );
         }
       }
       const v = field(hb, 'var');
       if (v) {
         if (values.has(v.text) || instances.has(v.text)) {
-          add(v, `"${v.text}" is already a name in this component; pick another name for the vibration`, WARN);
+          add(v, `"${v.text}" is already a name in this component; pick another name for the arrival`, WARN);
         } else if (hearBlockFor(hb, v.text)) {
-          add(v, `"${v.text}" is already the vibration of a HEAR around this one; give this one another name`, WARN);
+          add(v, `"${v.text}" is already the arrival of a HEAR around this one; give this one another name`, WARN);
         }
       }
     };
 
-    const actsBeforeWhere = (stmt: Node): string | undefined => {
+    /** Whether a pattern's arms answer the filter's question rather than carrying a value. */
+    const isFilter = (pm: Node): boolean =>
+      kids(pm, 'pattern_case').some((kase) => {
+        const result = first(kase, 'pattern_result');
+        const cs = result ? first(result, 'control_statement') : undefined;
+        return !!cs && cs.text === 'ACCEPT';
+      });
+
+    const actsBeforeFilter = (stmt: Node): string | undefined => {
       if (stmt.type !== 'flow') {
-        return 'only wires that name a value for WHERE can come before it';
+        return 'only wires that name a value for the filter can come before it';
       }
       for (const child of stmt.children) {
         if (!child) {
@@ -2766,53 +3723,62 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         }
         const ct = child.type;
         if (ct === 'state_write') {
-          return 'writing state before WHERE would happen for vibrations it then drops';
-        } else if (ct === '=>') {
-          return 'yielding before WHERE would happen for vibrations it then drops';
+          return 'writing state before the filter would happen for arrivals it then drops';
+        } else if (ct === '=>' || ct === '~>') {
+          return 'yielding before the filter would happen for arrivals it then drops';
         } else if (ct === 'delay' || ct === 'vibration_link') {
-          return 'nothing can wait before WHERE: the filter runs the moment a vibration arrives';
+          return 'nothing can wait before the filter: it runs the moment something arrives';
         } else if (ct === 'flow_destination') {
           const id = first(child);
           const v = id && id.type === 'identifier' ? values.get(id.text) : undefined;
           if (!(v && v.kind === 'wire')) {
-            return 'sending anywhere but a plain wire before WHERE would happen for vibrations it then drops';
+            return 'sending anywhere but a plain wire before the filter would happen for arrivals it then drops';
           }
         }
       }
       return undefined;
     };
 
-    const checkWhere = (w: Node) => {
-      const block = w.parent;
+    /**
+     * The filter at the top of a HEAR body: a pattern whose arms say ACCEPT.
+     * It decides which arrivals are candidates, before the medium picks one
+     * of them, so it has to run first and it can't act on what it may drop.
+     * Anything no arm matches is dropped, so it needs no catch-all.
+     */
+    const checkFilter = (pm: Node) => {
+      const block = pm.parent;
       const hear = block?.parent;
       if (!(block && block.type === 'block' && hear && hear.type === 'hear_block')) {
-        add(w, 'WHERE filters the vibrations a HEAR accepts; it belongs in a HEAR(...) body');
-      } else {
-        let seenWhere = false;
-        for (const child of block.children) {
-          if (!child || !child.isNamed || child.type === 'comment') {
-            continue;
+        add(pm, 'ACCEPT answers which arrivals a HEAR takes, so this pattern belongs at the top of a HEAR(...) body');
+        return;
+      }
+      let seenFilter = false;
+      for (const child of block.children) {
+        if (!child || !child.isNamed || child.type === 'comment') {
+          continue;
+        }
+        if (child.id === pm.id) {
+          seenFilter = true;
+        } else if (child.type === 'pattern_match' && isFilter(child)) {
+          if (!seenFilter) {
+            add(pm, 'a HEAR body has one filter; combine the conditions into one pattern');
           }
-          if (child.id === w.id) {
-            seenWhere = true;
-          } else if (child.type === 'where_clause') {
-            if (!seenWhere) {
-              add(w, 'a HEAR body has one WHERE; combine the conditions into one pattern');
-            }
-          } else if (!seenWhere) {
-            const why = actsBeforeWhere(child);
-            if (why) {
-              add(child, why + '; move this line below the WHERE');
-            }
+        } else if (!seenFilter) {
+          const why = actsBeforeFilter(child);
+          if (why) {
+            add(child, why + '; move this line below the filter');
           }
         }
       }
-      for (const kase of kids(w, 'pattern_case')) {
+      for (const kase of kids(pm, 'pattern_case')) {
         const result = first(kase, 'pattern_result');
-        const n0 = result ? first(result, 'number') : undefined;
-        const text = n0?.text;
-        if (text !== '0' && text !== '1') {
-          add(result ?? kase, 'a WHERE arm yields 1 to keep the vibration or 0 to drop it');
+        const cs = result ? first(result, 'control_statement') : undefined;
+        const word = cs?.text;
+        if (word !== 'ACCEPT' && word !== 'NOP') {
+          add(
+            result ?? kase,
+            'an arm of a filter says ACCEPT, since a sensor can only take an arrival or leave it; write NOP to ignore a case on purpose, and anything no arm matches is dropped',
+          );
         }
       }
     };
@@ -2826,29 +3792,78 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
       const name = obj.text;
       let ty: string | undefined;
       if (hearBlockFor(fa, name)) {
-        ty = 'vibration';
+        ty = hearVarType(fa, name);
       } else {
         const v = values.get(name);
         if (!v) {
-          add(obj, `"${name}" is not declared here; fields like ${name}.freq are read from a HEAR's vibration, inside HEAR(${name} IN ...)`, config.undeclaredSignalSeverity);
+          add(
+            obj,
+            `"${name}" is not declared here; fields like ${name}.dist are read from what a HEAR catches, inside HEAR(${name} IN ...)`,
+            config.undeclaredSignalSeverity,
+          );
           return;
         }
+        v.read = true;
         ty = v.type;
       }
-      const flds = ty ? FIELDS[ty] : undefined;
-      if (!flds) {
-        add(fa, `"${name}" is a ${ty ?? 'plain value'}, which has no fields`);
+      const flds = readableFields(types, ty);
+      if (Object.keys(flds).length === 0) {
+        add(
+          fa,
+          `"${name}" is a ${ty ?? 'plain value'}, which has no fields; it is the whole value, so write ${name} on its own`,
+        );
         return;
       }
       if (!(fld.text in flds)) {
-        add(fld, `a ${ty} has no field "${fld.text}"; its fields are: ${fieldList(ty!)}`);
+        add(fld, `a ${ty} has no field "${fld.text}"; what you can read is: ${fieldList(flds)}`);
       }
+    };
+
+    /** The record a data_array is being built for, when the flow says which. */
+    const targetRecordOf = (node: Node): { text: string; fields: import('./types').RecordField[] } | undefined => {
+      let p: Node | null = node.parent;
+      while (p && p.type !== 'flow' && p.type !== 'pattern_case') {
+        p = p.parent;
+      }
+      if (!p) {
+        return undefined;
+      }
+      let target: string | undefined;
+      let last: Node | undefined;
+      for (const child of p.children) {
+        if (!child) {
+          continue;
+        }
+        const ct = child.type;
+        if (ct === 'flow_destination' || ct === 'pattern_result' || ct === 'flow_source') {
+          last = first(child);
+        } else if (!child.isNamed && (ct === '=>' || ct === '~>')) {
+          const declared = (scope.sig?.outPorts ?? []).filter((x) => !x.implicit);
+          const named = last && last.type === 'identifier' ? findPort(declared, last.text) : undefined;
+          target = named?.type ?? (declared.length === 1 ? declared[0].type : scope.sig?.ret);
+        }
+      }
+      if (target === undefined && last && last.type === 'identifier' && last.id !== node.id) {
+        target = values.get(last.text)?.type;
+      }
+      if (target === undefined) {
+        return undefined;
+      }
+      const payload = types.payloadOf(target);
+      const def = payload !== undefined ? (types.defs.get(payload) ?? payload) : undefined;
+      const flds = types.recordFields(def);
+      return flds ? { text: target, fields: flds } : undefined;
     };
 
     const checkNamedItem = (item: Node) => {
       const nNode = field(item, 'name');
-      if (nNode && !(nNode.text in FIELDS.vibration)) {
-        add(nNode, `"${nNode.text}" is not a field of a vibration; its fields are: ${fieldList('vibration')}`, WARN);
+      const target = nNode ? targetRecordOf(item) : undefined;
+      if (nNode && target && !target.fields.some((f) => f.name === nNode.text)) {
+        add(
+          nNode,
+          `"${nNode.text}" is not a part of a ${target.text}; its parts are: ${target.fields.map((f) => f.name).join(', ')}`,
+          WARN,
+        );
       }
       const vNode = field(item, 'value');
       if (vNode && vNode.type === 'identifier') {
@@ -2864,21 +3879,17 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           return false;
         }
         if (t === 'flow' || t === 'pattern_case') {
-          const p = x.parent;
-          const inWhere = t === 'pattern_case' && p && p.type === 'where_clause';
-          if (!inWhere) {
-            trackFlow(x);
-            let last: Node | undefined;
-            for (const child of x.children) {
-              if (!child) {
-                continue;
-              }
-              const ct = child.type;
-              if (ct === 'flow_source' || ct === 'flow_destination' || ct === 'pattern_result') {
-                last = first(child);
-              } else if (!child.isNamed && (ct === '=>' || ct === '~>')) {
-                yields.push({ node: child, value: last, arrow: ct });
-              }
+          trackFlow(x);
+          let last: Node | undefined;
+          for (const child of x.children) {
+            if (!child) {
+              continue;
+            }
+            const ct = child.type;
+            if (ct === 'flow_source' || ct === 'flow_destination' || ct === 'pattern_result') {
+              last = first(child);
+            } else if (!child.isNamed && (ct === '=>' || ct === '~>')) {
+              yields.push({ node: child, value: last, arrow: ct });
             }
           }
         }
@@ -2940,7 +3951,7 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           const id = first(x, 'identifier');
           if (id && !hasAncestor(x, 'flow_destination') && !hasAncestor(x, 'state_declaration')) {
             const holder = x.parent?.parent;
-            const inSubject = !!holder && (holder.type === 'pattern_match' || holder.type === 'where_clause');
+            const inSubject = !!holder && holder.type === 'pattern_match';
             checkValue(id, inSubject ? 'subject' : 'flow');
           }
         } else if (t === 'event_block' || t === 'change_block') {
@@ -2950,9 +3961,8 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           }
         } else if (t === 'hear_block') {
           checkHear(x);
-        } else if (t === 'where_clause') {
-          checkWhere(x);
-          checkPattern(x);
+        } else if (t === 'vibration_link') {
+          checkAirLink(x);
         } else if (t === 'field_access') {
           checkFieldAccess(x);
           return false;
@@ -2976,7 +3986,16 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
           if (id) {
             checkValue(id, 'flow');
           }
+          if (x.text === 'ACCEPT') {
+            const kase = x.parent?.parent;
+            if (!(kase && kase.type === 'pattern_case')) {
+              add(x, 'ACCEPT answers an arm of the filter at the top of a HEAR(...) body; on its own it says nothing');
+            }
+          }
         } else if (t === 'pattern_match') {
+          if (isFilter(x)) {
+            checkFilter(x);
+          }
           checkPattern(x);
         } else if (t === 'state_write') {
           checkStateWrite(x);
@@ -2997,6 +4016,19 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
         add(inst.node, `"${name}" is declared but never wired`, WARN);
       }
     }
+
+    // A wire comes into being by being written to, so a misspelled
+    // destination quietly makes a second wire rather than failing. Reading a
+    // name nothing writes is already an error; this is the other half of it.
+    for (const [name, v] of values) {
+      if (v.kind === 'wire' && !v.read && v.defNode) {
+        add(
+          v.defNode,
+          `nothing reads "${name}"; it is written here and goes nowhere, which is usually a name spelled two ways`,
+          config.unreadWireSeverity,
+        );
+      }
+    }
   }
 
   walk(root, (n) => {
@@ -3006,6 +4038,15 @@ export function analyze(text: string, path: string | undefined, ws: Workspace, c
               if (open) {
                   add(open, 'a type needs a definite number of pins, so this range needs both ends');
               }
+          }
+          // The braces after a type name take a lane count or a medium, and
+          // the two can always be told apart: one is a range, the other is
+          // one of a fixed set of names.
+          for (const t of kids(n, 'type')) {
+              add(
+                  t,
+                  `the braces after a type name take a lane count like {0..3} or a medium (${MEDIUM_NAMES.join(', ')}); "${norm(t.text)}" is neither`,
+              );
           }
       } else if (n.type === 'vibration_link') {
           const open = openEnd(field(n, 'distance'));
